@@ -1,0 +1,9 @@
+{
+  "name": "totem-keybard-overlay",
+  "productName": "TOTEM Overlay",
+  "version": "1.0.0",
+  "description": "Shows your TOTEM layout see-through on top of every app and follows the layer you're on.",
+  "main": "main.js",
+  "license": "GPL-2.0-or-later",
+  "private": true
+}

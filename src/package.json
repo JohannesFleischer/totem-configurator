@@ -1,0 +1,13 @@
+{
+    "name": "totem-keybard",
+    "version": "1.0.0",
+    "description": "Unofficial configurator and desktop layout overlay for the GEIST TOTEM keyboard (Vial firmware)",
+    "private": true,
+    "type": "module",
+    "license": "GPL-2.0-or-later",
+    "scripts": {
+        "build": "bun run build.ts",
+        "dev": "bun run build.ts --dev",
+        "typecheck": "tsc -p ."
+    }
+}

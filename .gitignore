@@ -1,0 +1,6 @@
+# Electron, downloaded by the start scripts
+untested-os/runtime/
+# nix-build / nix build results
+result
+result-*
+node_modules/
