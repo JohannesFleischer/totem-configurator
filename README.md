@@ -7,8 +7,7 @@ your layout and follows the layer you're on — handy while you learn a new layo
 Not affiliated with Svalboard or GEIST.
 
 > **Disclaimer:** this project is vibecoded (written with an AI assistant) and probably
-> unmaintained. It was tested against a simulated TOTEM, not on real hardware — the firmware in
-> particular. Use it at your own risk, and save your layout as a `.vil` file before flashing.
+> unmaintained. Use it at your own risk, and save your layout as a `.vil` file before flashing.
 
 ## What's here
 
@@ -21,6 +20,15 @@ Not affiliated with Svalboard or GEIST.
 
 `nix/app/` and `untested-os/` are built from `src/` and checked in, so nothing has to be built to use them.
 
+## Firmware
+
+`firmware/` has current vial-qmk for the TOTEM with mouse keys, media keys, dynamic macros, layer
+lights (the XIAO's RGB LED) and a small report of the active layer for the overlay. To flash: save your layout as a
+`.vil`; double-tap the reset button on the left half's XIAO RP2040 and copy
+`totem_vial_keybard_left.uf2` onto the `RPI-RP2` drive; do the same for the right half with
+`totem_vial_keybard_right.uf2`; reconnect and open your `.vil` to write your layout back.
+Source, patch and details: [`firmware/BUILD.md`](firmware/BUILD.md).
+
 ## Usage
 
 **Configurator:** run `totem-keybard` (NixOS), or open `untested-os/totem-keybard.html` in
@@ -32,18 +40,6 @@ a browser you can also drop a `.vil` on the window.
 
 **Stored layers:** keep layers you aren't using (say a Colemak and a Neo base layer) and load one
 into any layer when you want it; what was there is stored first. Also from other `.vil` files.
-
-**System file dialogs on niri:** Electron always asks the desktop portal for file dialogs, and
-niri's portal setup sends that to the GNOME portal, which only shows one with Nautilus installed.
-Without it nothing opens (in this app's "System dialog…" and in other Electron/Chromium apps).
-On NixOS, give the portal GTK's file chooser:
-
-```nix
-xdg.portal = {
-  extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
-  config.niri."org.freedesktop.impl.portal.FileChooser" = [ "gtk" ];
-};
-```
 
 **Layer lights:** with the firmware below, the RGB LED on each half's XIAO RP2040 shows a colour
 for the layer you're on (visible through a clear or white case). Under "Layer Lights" in the
@@ -73,15 +69,6 @@ with `nix-shell nix/shell.nix`.
 same two launcher entries for your user (`--remove-from-launcher` takes them out; run it again
 if you move the folder). You also need
 [Vial's udev rule](https://get.vial.today/manual/linux-udev.html).
-
-## Firmware
-
-`firmware/` has current vial-qmk for the TOTEM with mouse keys, media keys, dynamic macros, layer
-lights (the XIAO's RGB LED) and a small report of the active layer for the overlay. To flash: save your layout as a
-`.vil`; double-tap the reset button on the left half's XIAO RP2040 and copy
-`totem_vial_keybard_left.uf2` onto the `RPI-RP2` drive; do the same for the right half with
-`totem_vial_keybard_right.uf2`; reconnect and open your `.vil` to write your layout back.
-Source, patch and details: [`firmware/BUILD.md`](firmware/BUILD.md).
 
 ## Development
 
