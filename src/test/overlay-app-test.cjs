@@ -28,9 +28,11 @@ module.exports = async function run(app) {
         // the window itself
         if (!ov.isAlwaysOnTop()) throw new Error("overlay is not always on top");
         if (ov.isFocusable()) throw new Error("overlay can take focus");
+        if (ov.isResizable()) throw new Error("overlay should open with a fixed size (keeps it floating)");
         await until(ov, "!!document.querySelector('.ovl .key')", "the overlay to draw keys");
         await until(ov, "!document.querySelector('.ovl-status')", "the overlay to follow the keyboard");
-        ok("overlay window: transparent, always on top, not focusable; finds the TOTEM and draws layer 0");
+        if (ov.getTitle() !== "TOTEM overlay") throw new Error(`overlay title is "${ov.getTitle()}"`);
+        ok("overlay window: transparent, always on top, not focusable, fixed size, titled TOTEM overlay; draws layer 0");
         await shot(ov, "app-overlay-layer0.png");
 
         // follows the layer
@@ -59,10 +61,13 @@ module.exports = async function run(app) {
         if (after.width !== 900 || after.height !== 330) throw new Error(`resize gave ${after.width}x${after.height}`);
         if (after.y + after.height !== before.y + before.height) throw new Error("resize moved the bottom edge");
         await js(ov, "document.querySelector('.ovl-adjust-bar .done').click(); true");
-        await sleep(200);
+        await sleep(600);
         if (ov.isFocusable()) throw new Error("Done should make the overlay click-through again");
+        if (ov.isResizable()) throw new Error("the overlay should keep a fixed size");
+        const done = ov.getBounds();
+        if (done.width !== 900 || done.height !== 330) throw new Error(`Done changed the size to ${done.width}x${done.height}`);
         await until(ov, "!document.querySelector('.ovl-adjust')", "the adjust frame to go");
-        ok("Move and resize: frame, resize keeps the bottom edge, Done makes it click-through again");
+        ok("Move and resize: frame, resize keeps the bottom edge; Done keeps the size and makes it click-through again");
 
         // settings window changes the overlay live
         const sw = app.openSettings();

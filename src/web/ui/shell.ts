@@ -8,7 +8,7 @@ import {
     connect,
     disconnect,
     escape,
-    finishSwap,
+    swapClick,
     invalidate,
     keyAt,
     loadDemo,
@@ -27,7 +27,7 @@ import {
     setLockCode,
     setMultiSelect,
     startLock,
-    startSwap,
+    toggleSwap,
     state,
     stopModes,
     stopTester,
@@ -40,13 +40,16 @@ import {
     vial,
     type PanelId,
 } from "../store";
+import { overlayHost } from "../overlay-settings";
 import { layerColor } from "../totem";
 import { BOARD_W, MAX_SQUEEZE, renderBoard, slotKey } from "./board";
 import { h, icon, ICONS, mount } from "./dom";
+import { pickLayoutFile } from "./filepicker";
 import { attachGestures, cancelGesture, gestureClasses } from "./gestures";
 import { closeEditor, comboEditor, comboList, macroEditor, macroList, overrideEditor, overrideList, tapDanceEditor, tapDanceList } from "./editors";
-import { aboutPanel, overlayPanel, settingsPanel, testerPanel } from "./panels";
+import { aboutPanel, lightsPanel, overlayPanel, settingsPanel, testerPanel } from "./panels";
 import { customKey, layerKeys, macroTdKeys, specialKeys, standardKeys } from "./picker";
+import { storedPanel } from "./stored-layers";
 
 // The TOTEM's split shape: three staggered key columns and a thumb key per half.
 const LOGO = `<svg viewBox="0 0 27 15.4" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="0.0" y="1.8" width="3.4" height="9.6" rx="1"/><rect x="4.2" y="0.0" width="3.4" height="9.6" rx="1"/><rect x="8.4" y="0.9" width="3.4" height="9.6" rx="1"/><rect x="7.4" y="12.2" width="4.4" height="3.0" rx="1"/><rect x="23.6" y="1.8" width="3.4" height="9.6" rx="1"/><rect x="19.4" y="0.0" width="3.4" height="9.6" rx="1"/><rect x="15.2" y="0.9" width="3.4" height="9.6" rx="1"/><rect x="15.2" y="12.2" width="4.4" height="3.0" rx="1"/></svg>`;
@@ -64,9 +67,11 @@ const NAV: (null | { id: PanelId; label: string; icon: string })[] = [
     { id: "macros", label: "Macros", icon: ICONS.macro },
     { id: "combos", label: "Combos", icon: ICONS.combo },
     { id: "overrides", label: "Overrides", icon: ICONS.override },
+    { id: "stored", label: "Stored Layers", icon: ICONS.archive },
     null,
     { id: "tester", label: "Key Tester", icon: ICONS.tester },
     { id: "overlay", label: "Overlay", icon: ICONS.overlay },
+    { id: "lights", label: "Layer Lights", icon: ICONS.light },
     { id: "settings", label: "Settings", icon: ICONS.settings },
     { id: "about", label: "About", icon: ICONS.info },
 ];
@@ -80,6 +85,8 @@ const TITLES: Record<PanelId, string> = {
     overrides: "Key Overrides",
     tester: "Key Tester",
     overlay: "Desktop Overlay",
+    lights: "Layer Lights",
+    stored: "Stored Layers",
     settings: "Settings",
     about: "About",
 };
@@ -163,7 +170,11 @@ function renderPanel() {
                                 ? settingsPanel()
                                 : p === "overlay"
                                   ? overlayPanel()
-                                  : aboutPanel();
+                                  : p === "lights"
+                                    ? lightsPanel()
+                                    : p === "stored"
+                                      ? storedPanel()
+                                      : aboutPanel();
     }
     const scroll = panelEl.querySelector(".panel-body")?.scrollTop ?? 0;
     const sameView = panelEl.dataset.view === `${p}:${ed?.kind ?? ""}:${ed?.idx ?? ""}`;
@@ -229,8 +240,8 @@ function topBar(): HTMLElement {
             ? h("button", { class: "pill ghost", onClick: () => disconnect(), title: "Disconnect the keyboard" }, icon(ICONS.plug, 16), "Disconnect")
             : h("button", { class: "pill", onClick: () => connect(), disabled: !HidTransport.supported(), title: HidTransport.supported() ? "Connect your TOTEM" : "WebHID needs Chrome, Edge or Opera" }, icon(ICONS.plug, 16), "Connect"),
         h("span", { class: "vsep" }),
-        h("button", { class: "icon-btn", title: live ? "Open a .vil layout and write it to the keyboard" : "Open a .vil layout", onClick: () => fileInput.click() }, icon(ICONS.upload, 20)),
-        h("button", { class: "icon-btn", title: "Save the layout as a .vil file (works with the Vial app)", onClick: () => saveFile() }, icon(ICONS.download, 20)),
+        h("button", { class: "icon-btn", title: live ? "Open a .vil layout and write it to the keyboard (or drop the file on the window)" : "Open a .vil layout (or drop the file on the window)", onClick: () => pickLayoutFile(fileInput, openFile) }, icon(ICONS.upload, 20)),
+        h("button", { class: "icon-btn", title: overlayHost() ? "Save the layout as a .vil file in your Downloads folder (works with the Vial app)" : "Save the layout as a .vil file (works with the Vial app)", onClick: () => saveFile() }, icon(ICONS.download, 20)),
         h("span", { class: "vsep" }),
         h("button", { class: "icon-btn", "aria-label": "Undo", title: undoLabel() ? `Undo: ${undoLabel()}  (${MOD_KEY}Z)` : "Nothing to undo", disabled: !undoLabel(), onClick: () => undo() }, icon(ICONS.undo, 20)),
         h("button", { class: "icon-btn", "aria-label": "Redo", title: redoLabel() ? `Redo: ${redoLabel()}  (${MOD_KEY}Shift+Z)` : "Nothing to redo", disabled: !redoLabel(), onClick: () => redo() }, icon(ICONS.redo, 20)),
@@ -256,7 +267,8 @@ function renderMain() {
     const transmit = !!t && t.kind !== "key";
     const tester = state.panel === "tester" && state.tester.running;
     const lock = tester ? null : state.lock;
-    const swap = tester ? null : state.swapFrom;
+    const swapping = !tester && state.swapMode;
+    const swap = swapping ? state.swapFrom : null;
     const sel = new Set(t && t.kind === "key" && t.layer === layer && !lock ? selectedKeys() : []);
     const flash = state.flash?.layer === layer ? state.flash.keys : [];
     const { unit, squeeze } = sizing();
@@ -280,8 +292,8 @@ function renderMain() {
                 else lockApply(layer, r, c);
                 return;
             }
-            if (swap) {
-                finishSwap(layer, r, c);
+            if (swapping) {
+                swapClick(layer, r, c);
                 return;
             }
             if (transmit) {
@@ -328,7 +340,7 @@ function renderMain() {
             lock.code === null
                 ? `Pick the key to lock${orType}, or click a key on the TOTEM to copy it.`
                 : `Click keys to put ${serialize(lock.code)} on them. Alt-click a key to lock its keycode. Esc stops.`;
-    else if (swap) hint = `Click the key to swap with${kb.layers > 1 ? " (any layer)" : ""}. Esc cancels.`;
+    else if (swapping) hint = swap ? `Click the key to swap with${kb.layers > 1 ? " (any layer)" : ""}. Esc stops.` : "Click two keys to swap them, then the next two. Esc stops.";
     else if (transmit) hint = "Click a key on the TOTEM to copy its keycode into the selected slot.";
     else if (!t) hint = state.multiSelect ? "Click keys to select them." : `Click a key to change it. ${MOD_KEY === "⌘" ? "⌘" : "Ctrl"}-click or drag a box to select more.`;
     else if (t.kind === "key" && sel.size > 1) hint = `${sel.size} keys selected — pick a key${orType} to set them all.`;
@@ -346,7 +358,7 @@ function renderMain() {
         topBar(),
         layerTabs,
         title,
-        h("div", { class: ["stage", lock && "mode-lock", swap && "mode-swap"] }, board),
+        h("div", { class: ["stage", lock && "mode-lock", swapping && "mode-swap"] }, board),
         h(
             "div",
             { class: "footer" },
@@ -380,26 +392,21 @@ function editTools(layers: number): HTMLElement {
                 : slotKey(lock.code, { small: true, title: `Locked: ${serialize(lock.code)}. Clicks on the TOTEM put it on keys.` }),
             h("button", { class: "pill sm", "aria-label": "Stop locking", title: "Stop (Esc)", onClick: () => stopModes() }, "Stop"),
         );
-    const swap = state.swapFrom;
-    if (swap) {
-        const code = keyAt(swap.layer, Math.floor(swap.pos / TOTEM_COLS), swap.pos % TOTEM_COLS);
+    if (state.swapMode) {
+        const swap = state.swapFrom;
+        const code = swap ? keyAt(swap.layer, Math.floor(swap.pos / TOTEM_COLS), swap.pos % TOTEM_COLS) : 0;
         return box(
             "mode",
             icon(ICONS.swap, 16),
             h("span", { class: "mode-name" }, "Swap"),
-            slotKey(code, { small: true, title: `${serialize(code)} on layer ${swap.layer}` }),
-            h("span", { class: "muted small" }, layers > 1 ? "with… (any layer)" : "with…"),
-            h("button", { class: "pill sm ghost", title: "Cancel (Esc)", onClick: () => stopModes() }, "Cancel"),
+            swap ? slotKey(code, { small: true, title: `${serialize(code)} on layer ${swap.layer}` }) : null,
+            h("span", { class: "muted small" }, swap ? (layers > 1 ? "with… (any layer)" : "with…") : "click two keys"),
+            h("button", { class: "pill sm", "aria-label": "Stop swapping", title: "Stop (Esc)", onClick: () => stopModes() }, "Stop"),
         );
     }
     const t = state.target;
     const keys = selectedKeys();
-    const swapTitle =
-        keys.length === 2
-            ? "Swap the two selected keys"
-            : keys.length === 1
-              ? "Swap this key with another: click Swap, then the other key (on any layer). You can also drag a key onto another."
-              : "Select one or two keys to swap (or drag a key onto another)";
+    const swapTitle = "Swap: click two keys to swap them, then the next two, until you press Esc or Stop. (You can also drag a key onto another.)";
     return box(
         "",
         keys.length > 1
@@ -421,7 +428,7 @@ function editTools(layers: number): HTMLElement {
             icon(ICONS.multi, 16),
             h("span", null, "Select multiple"),
         ),
-        h("button", { class: "tool", disabled: !(keys.length === 1 || keys.length === 2), title: swapTitle, onClick: () => startSwap() }, icon(ICONS.swap, 16), h("span", null, "Swap")),
+        h("button", { class: "tool", title: swapTitle, onClick: () => toggleSwap() }, icon(ICONS.swap, 16), h("span", null, "Swap")),
         h(
             "button",
             {
@@ -539,7 +546,7 @@ function welcome(): HTMLElement {
                 "div",
                 { class: "welcome-actions" },
                 h("button", { class: "pill", onClick: () => connect(), disabled: !supported }, icon(ICONS.plug, 16), "Connect TOTEM"),
-                h("button", { class: "pill ghost", onClick: () => fileInput.click() }, icon(ICONS.upload, 16), "Open a .vil layout"),
+                h("button", { class: "pill ghost", title: "Or drop a .vil file on this window", onClick: () => pickLayoutFile(fileInput, openFile) }, icon(ICONS.upload, 16), "Open a .vil layout"),
                 h("button", { class: "pill ghost", onClick: () => loadDemo() }, "Explore the demo layout"),
             ),
             fileInput,
@@ -565,11 +572,11 @@ function renderOverlay() {
 }
 
 /** Show a toast; one with an `id` replaces the previous toast with the same id. */
-function toast(msg: string, kind: "info" | "error" | "ok" = "info", id?: string) {
+function toast(msg: string, kind: "info" | "error" | "ok" = "info", id?: string, ms?: number) {
     if (id) toastsEl.querySelector(`[data-id="${id}"]`)?.remove();
     const el = h("div", { class: ["toast", kind], role: "status", dataset: id ? { id } : undefined }, msg);
     toastsEl.appendChild(el);
-    setTimeout(() => el.remove(), kind === "error" ? 7000 : id ? 2500 : 3500);
+    setTimeout(() => el.remove(), ms ?? (kind === "error" ? 7000 : id ? 2500 : 3500));
 }
 
 function confirmDialog(title: string, body: string, ok = "OK"): Promise<boolean> {
@@ -727,6 +734,20 @@ export function initShell(container: HTMLElement) {
     });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    // a .vil dropped anywhere on the window opens like "Open a .vil layout" (no file dialog needed)
+    window.addEventListener("dragover", (e) => {
+        if (!e.dataTransfer?.types.includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("drop", (e) => {
+        const f = e.dataTransfer?.files?.[0];
+        if (!f) return;
+        e.preventDefault(); // else the browser (or the app) would show the file instead
+        if (/\.(vil|json)$/i.test(f.name)) void openFile(f);
+        else toast(`${f.name} isn't a .vil layout.`, "error");
+    });
+    overlayHost()?.onSaved?.((r) => (r.file ? toast(`Saved to ${r.file}`, "ok", "saved", 8000) : toast(`Couldn't save the layout (${r.error}).`, "error", "saved")));
     // Holding Ctrl/Shift/Alt to click or drag must not put that modifier on the keys when it's released.
     window.addEventListener("pointerdown", () => (pendingModifier = null), true);
     attachGestures(mainEl);
@@ -748,7 +769,7 @@ export function initShell(container: HTMLElement) {
     mainEl.addEventListener("click", (ev) => {
         const t = ev.target as HTMLElement;
         if (!(t === mainEl || t.classList.contains("stage") || t.classList.contains("board"))) return;
-        if (state.swapFrom) stopModes();
+        if (state.swapMode) state.swapFrom = null, invalidate("board", "panel");
         else if (state.target?.kind === "key") selectTarget(null);
     });
     invalidate("all");

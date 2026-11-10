@@ -31,15 +31,28 @@
     const settings = { 1: 0, 2: 50, 3: 0, 4: 175, 5: 5, 6: 5000, 7: 200, 9: 10, 10: 16, 11: 8, 12: 10, 13: 30, 14: 10, 15: 80, 16: 8, 17: 40, 18: 0, 19: 80, 20: 5, 21: 0, 22: 0, 23: 0, 24: 0, 25: 200, 26: 0, 27: 0 };
     // A firmware built without mouse keys doesn't list their settings (ids 9-17).
     if (cfg.noMouseKeys) for (let q = 9; q <= 17; q++) delete settings[q];
+    const LIGHT_DEFAULTS = [[0, 0, 0], [255, 255, 255], [0, 90, 255], [0, 255, 60], [255, 0, 180], [255, 130, 0], [140, 0, 255], [0, 220, 220], [255, 210, 0], [255, 0, 0], [120, 255, 0], [0, 170, 255], [255, 80, 80], [90, 90, 255], [0, 255, 160], [255, 170, 110]];
     const mock = (window.__mock = {
         cfg, keymap, macroBuf, td, combos, ko, settings,
         unlocked: false, inProgress: !!cfg.startUnlocking, counter: 50, hold: cfg.autoHold,
         pressed: new Set(), log: [], blocked: 0,
         // live state reported to the overlay (firmware/overlay_report.c)
         layerState: 0, defaultLayerState: 1, mods: 0, capsLock: false, capsWord: false,
+        // layer lights (firmware/layer_lights.c): what's set, what's saved, what the LED shows
+        lights: { brightness: 48, colors: LIGHT_DEFAULTS.map((c) => [...c]), timeout: 0, speed: 128, effects: new Array(16).fill(0) },
+        lightsSaved: { brightness: 48, colors: LIGHT_DEFAULTS.map((c) => [...c]), timeout: 0, speed: 128, effects: new Array(16).fill(0) },
+        lightSets: 0, lightSaves: 0, lightPreview: null,
     });
 
     const le16 = (d, o) => d[o] | (d[o + 1] << 8);
+    /** What the LED shows now: the highest layer that's on (or the one just set), scaled by the brightness. */
+    mock.ledColor = () => {
+        const all = (mock.layerState | mock.defaultLayerState) >>> 0;
+        let layer = all ? 31 - Math.clz32(all) : 0;
+        if (mock.lightPreview && Date.now() < mock.lightPreview.until) layer = mock.lightPreview.layer;
+        const c = mock.lights.colors[layer] || [0, 0, 0];
+        return c.map((v) => Math.floor((v * mock.lights.brightness + 127) / 255));
+    };
     function handle(req) {
         const d = new Uint8Array(32);
         d.set(req.slice(0, 32));
@@ -144,10 +157,52 @@
                 d.set([a, b, total >> 8, total & 0xff], 8);
                 break;
             }
+            case 5: case 6: case 7: case 8: case 9: {
+                if (cfg.noLights) return d; // an older firmware: not handled
+                const p = (i) => 8 + i;
+                if (d[5] === 5) {
+                    const first = d[p(0)];
+                    d.fill(0, 8);
+                    d[p(0)] = 16; d[p(1)] = mock.lights.brightness; d[p(2)] = first;
+                    for (let i = 0; i < 7 && first + i < 16; i++) d.set(mock.lights.colors[first + i], p(3 + i * 3));
+                } else if (d[5] === 6) {
+                    const which = d[p(0)];
+                    let ok = 1;
+                    if (which === 0xff) mock.lights.brightness = d[p(1)];
+                    else if (which < 16) {
+                        mock.lights.colors[which] = [d[p(1)], d[p(2)], d[p(3)]];
+                        mock.lightPreview = { layer: which, until: Date.now() + 2500 };
+                    } else ok = 0;
+                    d[p(4)] = ok;
+                    d.fill(0, p(5));
+                    mock.lightSets++;
+                } else if (d[5] === 8) {
+                    d.fill(0, 8);
+                    d[p(0)] = mock.lights.timeout & 0xff; d[p(1)] = mock.lights.timeout >> 8; d[p(2)] = mock.lights.speed;
+                    d.set(mock.lights.effects, p(3));
+                } else if (d[5] === 9) {
+                    let ok = 1;
+                    if (d[p(0)] === 0) mock.lights.timeout = d[p(1)] | (d[p(2)] << 8);
+                    else if (d[p(0)] === 1) mock.lights.speed = d[p(1)];
+                    else if (d[p(0)] === 2 && d[p(1)] < 16 && d[p(2)] < 3) {
+                        mock.lights.effects[d[p(1)]] = d[p(2)];
+                        mock.lightPreview = { layer: d[p(1)], until: Date.now() + 2500 };
+                    } else ok = 0;
+                    d[p(4)] = ok;
+                    d.fill(0, p(5));
+                    mock.lightSets++;
+                } else {
+                    mock.lightsSaved = JSON.parse(JSON.stringify(mock.lights));
+                    mock.lightSaves++;
+                    d.fill(0, 8);
+                    d[p(0)] = 1;
+                }
+                break;
+            }
             default: return d; // not handled: status stays 0
         }
         mock.overlayRequests = (mock.overlayRequests || 0) + 1;
-        d[7] = 1;
+        d[7] = cfg.noLights ? 1 : 3;
         return d;
     }
     // Replies meant for another program that has the keyboard open too: the keyboard sends

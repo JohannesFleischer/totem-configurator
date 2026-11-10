@@ -1,9 +1,277 @@
+diff --git a/keyboards/geigeigeist/totem/keymaps/vial/config.h b/keyboards/geigeigeist/totem/keymaps/vial/config.h
+index e3ba33b9..7150897b 100644
+--- a/keyboards/geigeigeist/totem/keymaps/vial/config.h
++++ b/keyboards/geigeigeist/totem/keymaps/vial/config.h
+@@ -20,3 +20,10 @@
+ #undef LOCKING_RESYNC_ENABLE
+ 
+ #define DYNAMIC_KEYMAP_LAYER_COUNT 16
++
++// totem-keybard layer lights (layer_lights.c): the RGB LED on each half's XIAO RP2040
++#define WS2812_DI_PIN GP12
++#define WS2812_LED_COUNT 1
++#define WS2812_PIO_USE_PIO1                // the link between the halves uses PIO0
++#define EECONFIG_USER_DATA_SIZE 69         // per layer (16) a colour and an effect; brightness, speed, idle timeout
++#define SPLIT_TRANSACTION_IDS_USER TOTEM_LIGHTS_SYNC
+diff --git a/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.c b/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.c
+new file mode 100644
+index 00000000..626965fe
+--- /dev/null
++++ b/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.c
+@@ -0,0 +1,219 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++//
++// totem-keybard layer lights: the RGB LED on each half's XIAO RP2040 (data on GP12, power
++// switched by GP11) shows the colour of the layer you're on: the highest layer that's on.
++//
++// One colour and one effect (steady, breathing, rainbow) per layer, a brightness, an effect
++// speed and an idle timeout, kept in the keyboard's EEPROM. totem-keybard reads and sets them
++// through the overlay report's commands (overlay_report.c). The half on USB works out the
++// colour and sends it to the other half. The LEDs go dark while the computer sleeps, and
++// after the idle timeout until a key is pressed.
++
++#include QMK_KEYBOARD_H
++#include <string.h>
++#include "ws2812.h"
++#include "transactions.h"
++#include "layer_lights.h"
++
++#define LIGHTS_MAGIC 0x4D // the EEPROM block holds lights saved by this code (in this layout)
++#define FRAME_MS 30       // effects move this often
++#define PREVIEW_MS 2500   // a colour just set shows this long, whatever the layer
++#define RESEND_MS 500     // the other half gets the colour again this often (it may have restarted)
++
++typedef struct __attribute__((packed)) {
++    uint8_t magic;
++    uint8_t brightness;
++    uint8_t timeout[2]; // seconds without a key press until the LEDs go dark (LE), 0 = never
++    uint8_t speed;      // of the effects: 0 slow .. 255 fast
++    uint8_t rgb[LIGHT_LAYERS][3];
++    uint8_t effect[LIGHT_LAYERS];
++} lights_t;
++_Static_assert(sizeof(lights_t) == EECONFIG_USER_DATA_SIZE, "EECONFIG_USER_DATA_SIZE (config.h) must fit lights_t");
++
++static const lights_t defaults = {
++    LIGHTS_MAGIC,
++    48,
++    {0, 0},
++    128,
++    {
++        {0, 0, 0},       // 0: dark on the base layer
++        {255, 255, 255}, // 1 white
++        {0, 90, 255},    // 2 blue
++        {0, 255, 60},    // 3 green
++        {255, 0, 180},   // 4 magenta
++        {255, 130, 0},   // 5 orange
++        {140, 0, 255},   // 6 purple
++        {0, 220, 220},   // 7 cyan
++        {255, 210, 0},   // 8 yellow
++        {255, 0, 0},     // 9 red
++        {120, 255, 0},   // 10 lime
++        {0, 170, 255},   // 11 sky
++        {255, 80, 80},   // 12 coral
++        {90, 90, 255},   // 13 periwinkle
++        {0, 255, 160},   // 14 mint
++        {255, 170, 110}, // 15 peach
++    },
++    {0},
++};
++
++static lights_t lights;
++static uint8_t  preview_layer = 0xFF;
++static uint32_t preview_until;
++static uint8_t  shown[3];
++static bool     shown_once, suspended;
++static uint8_t  from_master[3];
++static bool     have_from_master;
++static uint32_t sent_at, frame_at;
++static bool     resend = true;
++
++static void show(const uint8_t rgb[3]) {
++    if (shown_once && memcmp(rgb, shown, 3) == 0) return;
++    memcpy(shown, rgb, 3);
++    shown_once = true;
++    ws2812_set_color(0, rgb[0], rgb[1], rgb[2]);
++    ws2812_flush();
++}
++
++// on the half without USB: the colour from the other half
++static void receive(uint8_t in_len, const void *in, uint8_t out_len, void *out) {
++    if (in_len < 3) return;
++    memcpy(from_master, in, 3);
++    have_from_master = true;
++}
++
++void keyboard_post_init_user(void) {
++    eeconfig_read_user_datablock(&lights, 0, sizeof lights);
++    if (lights.magic != LIGHTS_MAGIC) lights = defaults; // nothing saved yet
++    gpio_set_pin_output(GP11);                          // the LED's power
++    gpio_write_pin_high(GP11);
++    ws2812_init();
++    transaction_register_rpc(TOTEM_LIGHTS_SYNC, receive);
++}
++
++// one round of an effect: 8 s at speed 0, 1 s at speed 255
++static uint32_t period_ms(void) {
++    return 8000 - (uint32_t)lights.speed * 7000 / 255;
++}
++
++static void colour_of(uint8_t layer, uint32_t now, uint8_t out[3]) {
++    if (layer >= LIGHT_LAYERS) {
++        out[0] = out[1] = out[2] = 0;
++        return;
++    }
++    uint8_t  c[3] = {lights.rgb[layer][0], lights.rgb[layer][1], lights.rgb[layer][2]};
++    uint16_t level = lights.brightness; // 0..255
++    uint32_t p     = period_ms();
++    if (lights.effect[layer] == LIGHT_BREATHE) {
++        uint16_t ph = (uint32_t)(now % p) * 510 / p; // 0..509: up, then down
++        uint16_t up = ph < 255 ? ph : 509 - ph;      // 0..254
++        level       = level * (26 + up * 229 / 254) / 255; // between a tenth and all of the brightness
++    } else if (lights.effect[layer] == LIGHT_RAINBOW) {
++        // once round the colour wheel (three times slower than breathing), whatever the layer's colour
++        uint16_t h = (uint32_t)(now % (p * 3)) * 1530 / (p * 3); // 0..1529
++        uint8_t  x = h % 255, s = h / 255;
++        c[0] = s == 0 || s == 5 ? 255 : s == 1 ? 255 - x : s == 4 ? x : 0;
++        c[1] = s == 1 || s == 2 ? 255 : s == 0 ? x : s == 3 ? 255 - x : 0;
++        c[2] = s == 3 || s == 4 ? 255 : s == 2 ? x : s == 5 ? 255 - x : 0;
++    }
++    for (uint8_t i = 0; i < 3; i++) out[i] = ((uint16_t)c[i] * level + 127) / 255;
++}
++
++void housekeeping_task_user(void) {
++    if (!is_keyboard_master()) {
++        if (have_from_master) show(from_master);
++        return;
++    }
++    uint32_t now   = timer_read32();
++    uint8_t  layer = get_highest_layer(layer_state | default_layer_state);
++    if (preview_layer != 0xFF) {
++        if (timer_expired32(now, preview_until))
++            preview_layer = 0xFF;
++        else
++            layer = preview_layer;
++    }
++    uint8_t  rgb[3]  = {0, 0, 0};
++    uint32_t timeout = ((uint32_t)lights.timeout[0] | (uint32_t)lights.timeout[1] << 8) * 1000;
++    bool     idle    = timeout && preview_layer == 0xFF && last_input_activity_elapsed() >= timeout;
++    if (!idle) {
++        // effects move in steps of FRAME_MS, so the LED and the other half aren't updated more often
++        if (layer < LIGHT_LAYERS && lights.effect[layer] != LIGHT_STATIC) {
++            if (shown_once && timer_elapsed32(frame_at) < FRAME_MS) return;
++            frame_at = now;
++        }
++        colour_of(layer, now, rgb);
++    }
++    bool changed = !shown_once || memcmp(rgb, shown, 3) != 0;
++    show(rgb);
++    if (changed || resend || timer_elapsed32(sent_at) > RESEND_MS) {
++        resend  = !transaction_rpc_send(TOTEM_LIGHTS_SYNC, 3, rgb);
++        sent_at = timer_read32();
++    }
++}
++
++// The computer sleeps: dark (the main loop and so housekeeping stop meanwhile).
++void suspend_power_down_user(void) {
++    if (suspended) return;
++    suspended               = true;
++    static const uint8_t off[3] = {0, 0, 0};
++    show(off);
++    if (is_keyboard_master()) transaction_rpc_send(TOTEM_LIGHTS_SYNC, 3, off);
++}
++
++void suspend_wakeup_init_user(void) {
++    suspended = false;
++    resend    = true;
++}
++
++// ---- the overlay report's light commands
++
++void lights_report(uint8_t first, uint8_t *out) {
++    memset(out, 0, 24);
++    out[0] = LIGHT_LAYERS;
++    out[1] = lights.brightness;
++    out[2] = first;
++    for (uint8_t i = 0; i < 7 && first + i < LIGHT_LAYERS; i++) memcpy(&out[3 + i * 3], lights.rgb[first + i], 3);
++}
++
++bool lights_set(uint8_t which, const uint8_t *value) {
++    if (which == LIGHT_BRIGHTNESS) {
++        lights.brightness = value[0];
++        return true;
++    }
++    if (which >= LIGHT_LAYERS) return false;
++    memcpy(lights.rgb[which], value, 3);
++    preview_layer = which;
++    preview_until = timer_read32() + PREVIEW_MS;
++    return true;
++}
++
++void lights_options(uint8_t *out) {
++    memset(out, 0, 24);
++    out[0] = lights.timeout[0];
++    out[1] = lights.timeout[1];
++    out[2] = lights.speed;
++    memcpy(&out[3], lights.effect, LIGHT_LAYERS);
++}
++
++bool lights_set_option(uint8_t which, const uint8_t *value) {
++    switch (which) {
++        case LIGHT_OPT_TIMEOUT:
++            lights.timeout[0] = value[0];
++            lights.timeout[1] = value[1];
++            return true;
++        case LIGHT_OPT_SPEED:
++            lights.speed = value[0];
++            return true;
++        case LIGHT_OPT_EFFECT:
++            if (value[0] >= LIGHT_LAYERS || value[1] >= LIGHT_EFFECTS) return false;
++            lights.effect[value[0]] = value[1];
++            preview_layer           = value[0];
++            preview_until           = timer_read32() + PREVIEW_MS;
++            return true;
++    }
++    return false;
++}
++
++void lights_save(void) {
++    lights.magic = LIGHTS_MAGIC;
++    eeconfig_update_user_datablock(&lights, 0, sizeof lights);
++}
+diff --git a/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.h b/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.h
+new file mode 100644
+index 00000000..2114fe3b
+--- /dev/null
++++ b/keyboards/geigeigeist/totem/keymaps/vial/layer_lights.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// totem-keybard layer lights (layer_lights.c), as overlay_report.c uses them.
++#pragma once
++#include <stdint.h>
++#include <stdbool.h>
++
++#define LIGHT_LAYERS 16
++#define LIGHT_BRIGHTNESS 0xFF // lights_set(): the brightness instead of a layer
++
++/** Fills 24 bytes: layer count, brightness, `first`, then the colours (R, G, B) of up to 7 layers from `first`. */
++void lights_report(uint8_t first, uint8_t *out);
++/** A layer's colour (shown on the LEDs for a moment, even on another layer) or the brightness. Not saved yet. */
++bool lights_set(uint8_t which, const uint8_t *value);
++/** Keep the colours, brightness and options in the keyboard's EEPROM. */
++void lights_save(void);
++
++enum { LIGHT_STATIC = 0, LIGHT_BREATHE = 1, LIGHT_RAINBOW = 2, LIGHT_EFFECTS };
++enum { LIGHT_OPT_TIMEOUT = 0, LIGHT_OPT_SPEED = 1, LIGHT_OPT_EFFECT = 2 };
++/** Fills 24 bytes: idle timeout in seconds (u16 LE, 0 = never), effect speed, then each layer's effect. */
++void lights_options(uint8_t *out);
++/** LIGHT_OPT_TIMEOUT: value = seconds (u16 LE). LIGHT_OPT_SPEED: value[0]. LIGHT_OPT_EFFECT: value = layer, effect. Not saved yet. */
++bool lights_set_option(uint8_t which, const uint8_t *value);
 diff --git a/keyboards/geigeigeist/totem/keymaps/vial/overlay_report.c b/keyboards/geigeigeist/totem/keymaps/vial/overlay_report.c
 new file mode 100644
-index 00000000..6f5d1106
+index 00000000..08b7fbf1
 --- /dev/null
 +++ b/keyboards/geigeigeist/totem/keymaps/vial/overlay_report.c
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,150 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +//
 +// totem-keybard overlay report: lets the desktop overlay follow the layer you're on.
@@ -16,25 +284,33 @@ index 00000000..6f5d1106
 +//   reply    the same, with [7] = OVL_VERSION and the answer from [8]
 +//
 +// A reply with [7] == 0 was not handled (Vial ignores everything else while an unlock
-+// is in progress); [0] == 0xFF means a firmware without this report.
++// is in progress); [0] == 0xFF means a firmware without this report. Report version 3
++// has the layer lights (layer_lights.c).
 +//
-+// Nothing here changes the keyboard. Held keys are only reported while the keyboard
-+// is unlocked, the same rule Vial applies to its own key tester.
++// Nothing here changes the keymap; the light commands only change the light colours.
++// Held keys are only reported while the keyboard is unlocked, the same rule Vial applies
++// to its own key tester.
 +
 +#include QMK_KEYBOARD_H
 +#include <string.h>
 +#include "via.h"
 +#include "vial.h"
 +#include "dynamic_keymap.h"
++#include "layer_lights.h"
 +
 +#define OVL_CMD 0xF0
-+#define OVL_VERSION 1
++#define OVL_VERSION 3
 +
 +enum {
 +    OVL_STATE      = 0x01, // layers, modifiers, Caps Lock / Caps Word, unlock, held keys
 +    OVL_INFO       = 0x02, // layer/macro/tap dance... counts and the keyboard UID
 +    OVL_KEYMAP     = 0x03, // read keymap bytes, like VIA's dynamic_keymap_get_buffer
 +    OVL_KEYMAP_SUM = 0x04, // a checksum of the whole keymap, to notice edits
++    OVL_LIGHTS      = 0x05, // [8] first layer -> layer count, brightness, first, 7 x R G B
++    OVL_LIGHT_SET   = 0x06, // [8] layer (0xFF: brightness), [9..11] R G B (or brightness) -> [12] 1 if done
++    OVL_LIGHTS_SAVE = 0x07, // keep the lights in EEPROM -> [8] 1
++    OVL_LIGHT_OPTS  = 0x08, // -> idle timeout in s (u16 LE), effect speed, 16 x effect
++    OVL_LIGHT_OPT   = 0x09, // [8] 0: timeout [9..10] | 1: speed [9] | 2: effect [9] layer [10] effect -> [12] 1 if done
 +};
 +
 +#define OVL_KEYMAP_MAX 20 // keymap bytes per reply
@@ -122,16 +398,35 @@ index 00000000..6f5d1106
 +            p[3] = total & 0xFF;
 +            break;
 +        }
++        case OVL_LIGHTS:
++            lights_report(p[0], p);
++            break;
++        case OVL_LIGHT_SET:
++            p[4] = lights_set(p[0], &p[1]);
++            memset(&p[5], 0, length - 13);
++            break;
++        case OVL_LIGHT_OPTS:
++            lights_options(p);
++            break;
++        case OVL_LIGHT_OPT:
++            p[4] = lights_set_option(p[0], &p[1]);
++            memset(&p[5], 0, length - 13);
++            break;
++        case OVL_LIGHTS_SAVE:
++            lights_save();
++            memset(p, 0, length - 8);
++            p[0] = 1;
++            break;
 +        default:
 +            return; // unknown: [7] stays 0
 +    }
 +    data[7] = OVL_VERSION;
 +}
 diff --git a/keyboards/geigeigeist/totem/keymaps/vial/rules.mk b/keyboards/geigeigeist/totem/keymaps/vial/rules.mk
-index 4f7618e9..a2acb32e 100644
+index 4f7618e9..34b4b257 100644
 --- a/keyboards/geigeigeist/totem/keymaps/vial/rules.mk
 +++ b/keyboards/geigeigeist/totem/keymaps/vial/rules.mk
-@@ -1,2 +1,12 @@
+@@ -1,2 +1,17 @@
  VIA_ENABLE = yes
  VIAL_ENABLE = yes
 +
@@ -142,5 +437,10 @@ index 4f7618e9..a2acb32e 100644
 +EXTRAKEY_ENABLE = yes
 +DYNAMIC_MACRO_ENABLE = yes
 +
-+# totem-keybard overlay: a read-only Raw HID report of the live layer (overlay_report.c)
++# totem-keybard overlay: a Raw HID report of the live layer, and the light colours (overlay_report.c)
 +SRC += overlay_report.c
++
++# totem-keybard layer lights: the XIAO RP2040's RGB LED shows the layer (layer_lights.c)
++WS2812_DRIVER_REQUIRED = yes
++WS2812_DRIVER = vendor
++SRC += layer_lights.c

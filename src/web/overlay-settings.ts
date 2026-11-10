@@ -124,6 +124,15 @@ export function rgba(hex: string, a: number): string {
 }
 
 /** What the overlay app (Electron) offers the pages; absent in a normal browser. */
+/** A folder as the overlay app lists it for the page's file browser: subfolders and .vil/.json files. */
+export interface FolderListing {
+    dir: string;
+    parent?: string | null;
+    places: [string, string][];
+    entries?: { name: string; path: string; dir: boolean; mtime?: number; size?: number }[];
+    error?: string;
+}
+
 export interface OverlayHost {
     version: string;
     setAdjusting(on: boolean): void; // overlay takes the mouse so it can be moved and resized
@@ -140,6 +149,20 @@ export interface OverlayHost {
     reportState(s: KeyboardState): void; // the overlay tells the app (tray menu) about the keyboard
     setUnlocking(on: boolean): void; // the overlay shows the unlock keys: keep it on screen
     onCommand(fn: (command: "unlock" | "lock") => void): void;
+    onSaved?(fn: (r: { file?: string; error?: string }) => void): void; // a file the page saved (the app puts it in Downloads)
+    files?: {
+        list(dir?: string | null): Promise<FolderListing>;
+        read(file: string): Promise<{ name: string; text: string }>;
+    };
+    window?: {
+        ownBar?: boolean; // the window has no frame: the page draws the title bar
+        canMinimize?: boolean;
+        minimize(): void;
+        toggleMaximize(): void;
+        toggleFullscreen(): void;
+        close(): void;
+        onState(fn: (s: { maximized: boolean; fullscreen: boolean }) => void): void;
+    };
 }
 
 /** What the overlay knows about the keyboard, for the tray menu and the settings window. */

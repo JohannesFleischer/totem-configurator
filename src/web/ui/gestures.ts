@@ -183,7 +183,7 @@ export function attachGestures(area: HTMLElement) {
     area.addEventListener("pointerdown", (ev) => {
         if (ev.button !== 0 || ev.pointerType === "touch" || !state.kb) return;
         // not in the modes where a click on a key means something else
-        if (state.lock || state.swapFrom || (state.panel === "tester" && state.tester.running) || (state.target && state.target.kind !== "key")) return;
+        if (state.lock || state.swapMode || (state.panel === "tester" && state.tester.running) || (state.target && state.target.kind !== "key")) return;
         const el = ev.target as HTMLElement;
         if (!el.closest(".stage")) return;
         const key = el.closest<HTMLElement>(".board .key");

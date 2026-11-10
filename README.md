@@ -6,17 +6,18 @@ split keyboard running [Vial](https://get.vial.today), modelled on Svalboard's
 your layout and follows the layer you're on — handy while you learn a new layout.
 Not affiliated with Svalboard or GEIST.
 
-> **Disclaimer:** this project is vibecoded (written with an AI assistant) and will probably
-> be unmaintained. Use it at your own risk, and save your layout as a `.vil` file before flashing.
+> **Disclaimer:** this project is vibecoded (written with an AI assistant) and probably
+> unmaintained. It was tested against a simulated TOTEM, not on real hardware — the firmware in
+> particular. Use it at your own risk, and save your layout as a `.vil` file before flashing.
 
 ## What's here
 
-| Folder         |                                                                                                                                                             |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/`         | the source: the web app (`web/`), the overlay's Electron files (`electron/`), tests, data generators, `build.ts`                                            |
-| `nix/`         | NixOS: `totem-keybard.nix` (a dendritic flake part), `shell.nix`, and `app/` with the prebuilt files both run                                               |
+| Folder | |
+|---|---|
+| `src/` | the source: the web app (`web/`), the overlay's Electron files (`electron/`), tests, data generators, `build.ts` |
+| `nix/` | NixOS: `totem-keybard.nix` (a dendritic flake part), `shell.nix`, and `app/` with the prebuilt files both run |
 | `untested-os/` | everything else: `totem-keybard.html` (the configurator as a single file) and start scripts for the overlay on Windows, macOS and other Linux distributions |
-| `firmware/`    | TOTEM Vial firmware with mouse and media keys and the overlay's layer report; patch and build notes                                                         |
+| `firmware/` | TOTEM Vial firmware with mouse and media keys, layer lights and the overlay's layer report; patch and build notes |
 
 `nix/app/` and `untested-os/` are built from `src/` and checked in, so nothing has to be built to use them.
 
@@ -24,11 +25,36 @@ Not affiliated with Svalboard or GEIST.
 
 **Configurator:** run `totem-keybard` (NixOS), or open `untested-os/totem-keybard.html` in
 Chrome, Edge or Brave (it needs WebHID). Click Connect, click a key, then pick or type its new
-one; changes are written to the keyboard at once. Layouts load and save as Vial `.vil` files.
+one; changes are written to the keyboard at once. Layouts load and save as Vial `.vil` files:
+the save button puts them in `~/Downloads` (the app; it shows the path) or your browser's
+downloads folder. To open one, the app has its own file browser (starting in `~/Downloads`); in
+a browser you can also drop a `.vil` on the window.
+
+**Stored layers:** keep layers you aren't using (say a Colemak and a Neo base layer) and load one
+into any layer when you want it; what was there is stored first. Also from other `.vil` files.
+
+**System file dialogs on niri:** Electron always asks the desktop portal for file dialogs, and
+niri's portal setup sends that to the GNOME portal, which only shows one with Nautilus installed.
+Without it nothing opens (in this app's "System dialog…" and in other Electron/Chromium apps).
+On NixOS, give the portal GTK's file chooser:
+
+```nix
+xdg.portal = {
+  extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+  config.niri."org.freedesktop.impl.portal.FileChooser" = [ "gtk" ];
+};
+```
+
+**Layer lights:** with the firmware below, the RGB LED on each half's XIAO RP2040 shows a colour
+for the layer you're on (visible through a clear or white case). Under "Layer Lights" in the
+configurator, pick a colour and an effect (steady, breathing, rainbow) per layer, the brightness,
+and after how long without a key press the lights turn off; it's all kept on the keyboard.
 
 **Overlay:** run `totem-overlay` (NixOS) or the start script for your system in `untested-os/`
 (the first start downloads Electron 44.9.0 from GitHub and checks its SHA-256). Its settings and
-"Move and resize" are in its tray icon. It follows your layers only with the firmware below.
+"Move and resize" are in its tray icon. Under niri it asks niri (over `$NIRI_SOCKET`) to size and
+place it, and remembers where you put it; the app's windows there draw their own title bar
+(`TOTEM_KEYBARD_TITLEBAR=own|system` and `TOTEM_KEYBARD_THEME=dark|light` override what it picks). It follows your layers only with the firmware below.
 Held keys light up while the keyboard is unlocked: tray → "Unlock to show held keys…" (or the
 button in its settings) turns the overlay into a prompt showing the two keys to hold.
 
@@ -50,8 +76,8 @@ if you move the folder). You also need
 
 ## Firmware
 
-`firmware/` has current vial-qmk for the TOTEM with mouse keys, media keys, dynamic macros and a
-small read-only report of the active layer for the overlay. To flash: save your layout as a
+`firmware/` has current vial-qmk for the TOTEM with mouse keys, media keys, dynamic macros, layer
+lights (the XIAO's RGB LED) and a small report of the active layer for the overlay. To flash: save your layout as a
 `.vil`; double-tap the reset button on the left half's XIAO RP2040 and copy
 `totem_vial_keybard_left.uf2` onto the `RPI-RP2` drive; do the same for the right half with
 `totem_vial_keybard_right.uf2`; reconnect and open your `.vil` to write your layout back.

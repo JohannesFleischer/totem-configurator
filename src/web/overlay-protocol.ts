@@ -1,7 +1,8 @@
 // The overlay report of this project's TOTEM firmware (firmware/overlay_report.c): a
-// read-only Raw HID command that says which layer is on, which modifiers are held and,
-// while the keyboard is unlocked, which keys are held. Requests and replies are tagged,
-// so the overlay and the editor can use the keyboard at the same time.
+// Raw HID command that says which layer is on, which modifiers are held and, while the
+// keyboard is unlocked, which keys are held. Since report version 3 it also reads and sets
+// the layer lights (firmware/layer_lights.c). Requests and replies are tagged, so the
+// overlay and the editor can use the keyboard at the same time.
 //
 //   request  [0] 0xF0  [1..4] "TKOV"  [5] what  [6] client tag  [7] 0  [8..] arguments
 //   reply    the same, [7] = report version, answer from [8]
@@ -12,8 +13,49 @@ const MAGIC = [0x54, 0x4b, 0x4f, 0x56]; // "TKOV"
 const STATE = 0x01,
     INFO = 0x02,
     KEYMAP = 0x03,
-    KEYMAP_SUM = 0x04;
+    KEYMAP_SUM = 0x04,
+    LIGHTS = 0x05,
+    LIGHT_SET = 0x06,
+    LIGHTS_SAVE = 0x07,
+    LIGHT_OPTS = 0x08,
+    LIGHT_OPT = 0x09;
 const KEYMAP_CHUNK = 20;
+const LIGHTS_PER_REPLY = 7;
+/** The report version that has the layer lights. */
+export const LIGHTS_VERSION = 3;
+/** What the firmware starts with (firmware/layer_lights.c): the base layer dark. */
+export const DEFAULT_BRIGHTNESS = 48;
+
+export type Rgb = [number, number, number];
+/** How a layer's light behaves: steady, breathing in its colour, or going round the colour wheel. */
+export const EFFECTS = ["Steady", "Breathe", "Rainbow"] as const;
+export const DEFAULT_SPEED = 128;
+/** Per layer a colour (black: off) and an effect; how bright the LEDs are (0-255), how fast effects run (0-255), and after how many seconds without a key press they go dark (0: never). */
+export interface Lights {
+    brightness: number;
+    colors: Rgb[];
+    effects: number[];
+    speed: number;
+    timeout: number;
+}
+export const DEFAULT_LIGHTS: Rgb[] = [
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 90, 255],
+    [0, 255, 60],
+    [255, 0, 180],
+    [255, 130, 0],
+    [140, 0, 255],
+    [0, 220, 220],
+    [255, 210, 0],
+    [255, 0, 0],
+    [120, 255, 0],
+    [0, 170, 255],
+    [255, 80, 80],
+    [90, 90, 255],
+    [0, 255, 160],
+    [255, 170, 110],
+];
 
 /** The firmware has no overlay report (an older build): it answers 0xFF. */
 export class NoOverlayReport extends Error {
@@ -167,6 +209,59 @@ export class OverlayClient {
     /** Lock the keyboard again (held keys are hidden again). */
     async lock() {
         await this.vialTagged(0x08);
+    }
+
+    /** The firmware's report version: 1 = layer and keymap, 2 = also the layer lights. */
+    async version(): Promise<number> {
+        return (await this.ask(STATE, [], 400, 1))[7];
+    }
+
+    /** The layer light colours and brightness kept on the keyboard. */
+    async lights(): Promise<Lights> {
+        const colors: Rgb[] = [];
+        let count = 1,
+            brightness = 0;
+        for (let first = 0; first < count; first += LIGHTS_PER_REPLY) {
+            const d = await this.ask(LIGHTS, [first]);
+            count = d[8];
+            brightness = d[9];
+            for (let i = 0; i < LIGHTS_PER_REPLY && first + i < count; i++) colors.push([d[11 + i * 3], d[12 + i * 3], d[13 + i * 3]]);
+        }
+        const o = await this.ask(LIGHT_OPTS);
+        return { brightness, colors, timeout: o[8] | (o[9] << 8), speed: o[10], effects: Array.from(o.slice(11, 11 + count)) };
+    }
+
+    private async option(args: number[], what: string) {
+        const d = await this.ask(LIGHT_OPT, args);
+        if (!d[12]) throw new Error(`The keyboard refused ${what}.`);
+    }
+    /** Seconds without a key press until the LEDs go dark (0: never; up to 65535). Not kept until saveLights(). */
+    setLightTimeout(seconds: number) {
+        return this.option([0, seconds & 0xff, (seconds >> 8) & 0xff], "the timeout");
+    }
+    /** How fast the effects run, 0-255. */
+    setLightSpeed(speed: number) {
+        return this.option([1, speed], "the speed");
+    }
+    /** A layer's effect (index into EFFECTS); the LEDs show it for a moment. */
+    setLightEffect(layer: number, effect: number) {
+        return this.option([2, layer, effect], "the effect");
+    }
+
+    /** A layer's colour: the LEDs show it for a moment, whatever the layer. Not kept until saveLights(). */
+    async setLight(layer: number, rgb: Rgb) {
+        const d = await this.ask(LIGHT_SET, [layer, ...rgb]);
+        if (!d[12]) throw new Error(`The keyboard has no light for layer ${layer}.`);
+    }
+
+    /** How bright the LEDs are (0-255). Not kept until saveLights(). */
+    async setBrightness(value: number) {
+        await this.ask(LIGHT_SET, [0xff, value]);
+    }
+
+    /** Keep the colours and brightness on the keyboard (its EEPROM). */
+    async saveLights() {
+        await this.ask(LIGHTS_SAVE, [], 800);
     }
 
     /** Whether the firmware has the overlay report. */

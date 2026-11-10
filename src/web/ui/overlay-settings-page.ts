@@ -9,6 +9,7 @@ import { demoKeyboard } from "../totem";
 import { BOARD_H, BOARD_W, MAX_SQUEEZE } from "./board";
 import { h, icon, ICONS, mount } from "./dom";
 import { BOARD_KEY, IDLE, NAMES_PREFIX, renderOverlay, STATUS_KEY } from "./overlay-view";
+import { pickLayoutFile } from "./filepicker";
 import { layoutSelect } from "./picker";
 
 interface CachedBoard {
@@ -243,10 +244,7 @@ export function initOverlaySettings(container: HTMLElement) {
         }
         const layout = h("section", null, h("h3", null, "Your computer's keyboard layout"), h("p", { class: "small muted", style: "margin-top:0" }, "Legends show what keys type on this layout, as in the editor."), layoutSelect("full"));
         const namesIn = h("input", { type: "file", accept: ".vil,.json,application/json", class: "hidden" });
-        namesIn.addEventListener("change", async () => {
-            const f = namesIn.files?.[0];
-            namesIn.value = "";
-            if (!f) return;
+        const loadNames = async (f: File) => {
             const b = cachedBoard();
             try {
                 const json = JSON.parse((await f.text()).replace(/"uid"\s*:\s*(\d{16,})/, '"uid": "$1"'));
@@ -272,6 +270,11 @@ export function initOverlaySettings(container: HTMLElement) {
                 namesNote = `Couldn't read “${f.name}”: ${(e as Error).message}`;
                 render();
             }
+        };
+        namesIn.addEventListener("change", () => {
+            const f = namesIn.files?.[0];
+            namesIn.value = "";
+            if (f) void loadNames(f);
         });
         const namesMsg = h("span", { class: "small muted" }, namesNote);
         const names = h(
@@ -285,7 +288,7 @@ export function initOverlaySettings(container: HTMLElement) {
                     ? "Names you give layers in the editor of this app (tray → Open editor) show on the overlay by themselves. Named them in Chrome instead? Save a .vil file there and load it here."
                     : "The overlay shows the names saved in a .vil file.",
             ),
-            h("div", { class: "row wrap" }, h("button", { class: "pill ghost", onClick: () => namesIn.click() }, icon(ICONS.upload, 16), "Load names from a .vil file"), namesMsg, namesIn),
+            h("div", { class: "row wrap" }, h("button", { class: "pill ghost", onClick: () => pickLayoutFile(namesIn, loadNames) }, icon(ICONS.upload, 16), "Load names from a .vil file"), namesMsg, namesIn),
         );
         mount(
             container,

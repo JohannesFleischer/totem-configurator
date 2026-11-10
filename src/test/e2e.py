@@ -283,6 +283,7 @@ with sync_playwright() as p:
         pg.locator('.topbar button[title^="Save the layout"]').click()
     path = dl.value.path()
     vil = json.load(open(path))
+    expect(pg.locator('.toast[data-id="saved"]')).to_contain_text("to your browser's downloads folder")
     assert vil["version"] == 1 and vil["uid"] == 0x77EEEDEEFE3637CB, vil["uid"]
     assert len(vil["layout"]) == 5 and len(vil["layout"][0]) == 8 and len(vil["layout"][0][0]) == 5
     assert vil["layout"][0][1][1] == "LCTL_T(KC_A)", vil["layout"][0][1][1]
@@ -804,34 +805,59 @@ with sync_playwright() as p:
     # --- Swap button: two selected keys swap at once; one key waits for the second (any layer)
     pg.locator(".layer-tab").first.click()
     pg.keyboard.press("Escape")
-    expect(tool("Swap")).to_be_disabled()
+    # swap mode stays on: pair after pair, until Stop or Esc
+    tool("Swap").click()
+    expect(banner).to_contain_text("click two keys")
+    expect(pg.locator(".hint")).to_contain_text("Click two keys to swap them, then the next two")
     key(pg, 0, 1).click()
-    key(pg, 0, 2).click(modifiers=["Control"])
-    tool("Swap").click()
-    pg.wait_for_timeout(150)
-    assert L0()[1] == orig[2] and L0()[2] == orig[1]
-    undo_btn.click()
-    pg.wait_for_timeout(150)
-    key(pg, 0, 0).click()
-    tool("Swap").click()
-    expect(banner).to_contain_text("Swap")
-    expect(key(pg, 0, 0)).to_have_class(re.compile(r"\bswap-src\b"))
+    expect(key(pg, 0, 1)).to_have_class(re.compile(r"\bswap-src\b"))
     expect(pg.locator(".hint")).to_contain_text("Click the key to swap with (any layer)")
     shot(pg, "e2e-23-swap-mode.png")
-    pg.keyboard.press("Escape")  # cancel
-    expect(banner).to_have_count(0)
-    assert L0() == orig
-    tool("Swap").click()
+    key(pg, 0, 2).click()
+    pg.wait_for_function(f"() => window.__mock.keymap[0][1] === {orig[2]} && window.__mock.keymap[0][2] === {orig[1]}")
+    expect(banner).to_contain_text("click two keys")  # still swapping
+    key(pg, 0, 3).click()
+    key(pg, 0, 3).click()  # the first key again: taken back
+    expect(pg.locator(".key.swap-src")).to_have_count(0)
+    key(pg, 0, 0).click()  # next pair, across layers
     pg.locator(".layer-tab").nth(3).click()
     key(pg, 1, 1).click()
-    pg.wait_for_timeout(150)
-    assert mock(pg, f"m.keymap[3][{1*COLS+1}]") == orig[0] and L0()[0] == 0
+    pg.wait_for_function(f"() => window.__mock.keymap[3][{1*COLS+1}] === {orig[0]} && window.__mock.keymap[0][0] === 0")
+    expect(banner).to_contain_text("Swap")
+    pg.keyboard.press("Escape")
     expect(banner).to_have_count(0)
     assert "layers 0 and 3" in undo_btn.get_attribute("title"), undo_btn.get_attribute("title")
     undo_btn.click()
     pg.wait_for_timeout(150)
+    undo_btn.click()
+    pg.wait_for_timeout(150)
     assert L0() == orig and mock(pg, f"m.keymap[3][{1*COLS+1}]") == 0
-    ok("Swap button: two selected keys swap; one key then a click (also on another layer); Esc cancels")
+    # turned on with two keys selected: those swap first, and the mode stays on
+    pg.locator(".layer-tab").first.click()
+    key(pg, 0, 1).click()
+    key(pg, 0, 2).click(modifiers=["Control"])
+    tool("Swap").click()
+    pg.wait_for_function(f"() => window.__mock.keymap[0][1] === {orig[2]}")
+    expect(banner).to_contain_text("click two keys")
+    banner.locator("button", has_text="Stop").click()
+    expect(banner).to_have_count(0)
+    undo_btn.click()
+    pg.wait_for_function(f"() => window.__mock.keymap[0][1] === {orig[1]} && window.__mock.keymap[0][2] === {orig[2]}")
+    assert L0() == orig
+    ok("Swap mode: every two keys clicked swap (also across layers) until Stop or Esc; two selected keys swap first")
+
+    # the wrap (Mod + key, …) belongs to Standard Keys: other tabs stay usable
+    if pg.locator(".panel .wrapbox").count() == 0 or not pg.locator(".panel .wrapbox").is_visible():
+        nav(pg, "Standard Keys")
+    pg.locator(".panel .wrapbox .chip", has_text="Mod + key").click()
+    expect(pg.locator(".panel .wrap-note")).to_contain_text("Greyed-out keys")
+    nav(pg, "Layer Keys")
+    assert pg.locator(".panel .pk:disabled").count() == 0, "layer keys greyed out by a wrap chosen in Standard Keys"
+    nav(pg, "Special Keys")
+    assert pg.locator(".panel .pk:disabled").count() == 0
+    nav(pg, "Standard Keys")
+    pg.locator(".panel .wrapbox .chip", has_text="Plain").click()
+    ok("a wrap chosen in Standard Keys doesn't grey out keys in the other tabs; a note says why keys are greyed")
 
     # --- Lock key: pick a key once, then every click puts it on a key, until Esc or Stop
     pg.locator(".layer-tab").first.click()
@@ -1169,6 +1195,206 @@ with sync_playwright() as p:
     ed2.locator(".nav-item", has_text="Overlay").click()
     expect(ed2.locator('.panel .notice[data-support="no"]')).to_contain_text("totem_vial_keybard_left.uf2")
     ok("editor works with overlay traffic in between; its Overlay panel checks the firmware")
+
+    # ===================================================================== stored layers
+    sp = overlay_page("{}", page="")
+    sp.set_viewport_size({"width": 1440, "height": 900})
+    sp.wait_for_selector(".stage .board .key")
+    nav(sp, "Stored Layers")
+    expect(sp.locator(".panel .notice")).to_contain_text("Nothing stored yet")
+    km = lambda l: mock(sp, f"m.keymap[{l}].join()")
+    L0, L1 = km(0), km(1)
+    sp.locator(".panel .sl-store select").select_option("1")
+    sp.locator(".panel .sl-store button").click()
+    cards = sp.locator(".panel .sl-card")
+    named = lambda t: cards.filter(has=sp.locator(".sl-name", has_text=t))
+    expect(cards).to_have_count(1)
+    expect(cards.first.locator(".sl-name")).to_have_text("Layer 1")
+    sp.locator(".panel .sl-store button").click()
+    expect(sp.locator('.toast[data-id="stored"]')).to_contain_text("stored already")
+    expect(cards).to_have_count(1)
+    ok("Store this layer: keeps a copy of a layer (once: storing the same keys again says so)")
+
+    cards.first.locator(".sl-actions select").select_option("0")
+    cards.first.locator(".sl-load").click()
+    sp.wait_for_function(f"() => window.__mock.keymap[0].join() === {json.dumps(L1)}")
+    expect(sp.locator('.toast[data-id="stored"]')).to_contain_text("What was there is stored as “Layer 0”")
+    expect(cards).to_have_count(2)
+    assert km(1) == L1
+    expect(sp.locator(".layer-tab").first).not_to_have_text("Layer 1")  # a plain "Layer N" doesn't name the layer
+    shot(sp, "e2e-31-stored-layers.png")
+    undo_s = sp.locator('.topbar button[title^="Undo"]')
+    undo_s.click()
+    sp.wait_for_function(f"() => window.__mock.keymap[0].join() === {json.dumps(L0)}")
+    expect(cards).to_have_count(2)  # undo doesn't lose any stored layer
+    ok("Load into layer 0: writes the stored keys, stores what was there first; Undo restores the layer and keeps both stored")
+
+    old = named("Layer 0")
+    old.locator("button", has_text="Rename").click()
+    sp.locator(".panel .sl-rename").fill("Colemak")
+    sp.keyboard.press("Enter")
+    expect(named("Colemak")).to_have_count(1)
+    neo = named("Layer 1")
+    neo.locator(".sl-name").click()
+    sp.locator(".panel .sl-rename").fill("Neo")
+    sp.keyboard.press("Enter")
+    neo = named("Neo")
+    neo.locator(".sl-actions select").select_option("0")
+    neo.locator(".sl-load").click()
+    sp.wait_for_function(f"() => window.__mock.keymap[0].join() === {json.dumps(L1)}")
+    expect(sp.locator(".layer-tab").first).to_have_text("Neo")  # a real name names the layer
+    expect(cards).to_have_count(2)  # the old layer 0 is stored already (as Colemak)
+    named("Colemak").locator(".sl-load").click()  # its target is layer 0 as well
+    sp.wait_for_function(f"() => window.__mock.keymap[0].join() === {json.dumps(L0)}")
+    expect(sp.locator(".layer-tab").first).to_have_text("Colemak")
+    expect(cards).to_have_count(2)
+    ok("switching layer 0 between “Colemak” and “Neo”: keys and layer name follow, nothing piles up")
+
+    sp.locator(".panel .stored input[type=file]").set_input_files(named_path)
+    expect(sp.locator('.toast[data-id="stored"]')).to_contain_text("from “named.vil”")
+    expect(cards.filter(has_text="named.vil").first).to_be_visible()
+    assert named("Base").count() >= 1 or named("Nav").count() >= 1
+    n = cards.count()
+    page2 = overlay_page("{}", page="", ctx=sp.context)  # the same browser storage, reloaded
+    page2.set_viewport_size({"width": 1440, "height": 900})
+    page2.wait_for_selector(".stage .board .key")
+    nav(page2, "Stored Layers")
+    expect(page2.locator(".panel .sl-card")).to_have_count(n)
+    page2.close()
+    named("Colemak").locator(".sl-delete").click()
+    sp.locator(".modal .pill", has_text="Delete").click()
+    expect(cards).to_have_count(n - 1)
+    expect(named("Colemak")).to_have_count(0)
+    ok(f"Store layers from a .vil (named after its layers), kept across reloads ({n} stored), Delete asks first")
+
+    # ===================================================================== open by dropping a file
+    dp = browser.new_context(viewport={"width": 1440, "height": 900}).new_page()
+    dp.on("pageerror", lambda e: errors.append("PAGEERROR " + str(e)))
+    dp.goto(URL)
+    expect(dp.locator(".welcome")).to_be_visible()
+    def drop(page, name, text):
+        page.evaluate("""([name, text]) => {
+            const dt = new DataTransfer();
+            dt.items.add(new File([text], name, { type: "application/json" }));
+            window.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+            window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+        }""", [name, text])
+    drop(dp, "notes.txt", "hello")
+    expect(dp.locator(".toast.error")).to_contain_text("notes.txt isn't a .vil layout")
+    drop(dp, "named.vil", open(named_path).read())
+    dp.wait_for_selector(".stage .board .key")
+    expect(dp.locator(".topbar")).to_contain_text("named.vil · offline")
+    expect(dp.locator(".layer-tab").first).to_have_text("Base")
+    ok("a .vil dropped on the window opens (no file dialog needed); other files are refused")
+
+    # ===================================================================== layer lights
+    lt = overlay_page("{ crossTalk: 'tagged' }", page="")
+    lt.set_viewport_size({"width": 1440, "height": 900})
+    lt.wait_for_selector(".stage .board .key")
+    nav(lt, "Layer Lights")
+    rows = lt.locator(".panel .light-row")
+    expect(rows).to_have_count(5)  # the mock TOTEM has 5 layers
+    expect(lt.locator(".panel .ov-val").first).to_have_text("19 %")  # 48 of 255
+    expect(rows.nth(0)).to_have_class(re.compile(r"\boff\b"))
+    expect(rows.nth(2)).to_have_attribute("data-color", "#005aff")
+    shot(lt, "e2e-28-layer-lights.png")
+    ok("Layer Lights panel: reads the colours and brightness from the TOTEM, one row per layer, base layer off")
+
+    def pick_color(row, value):
+        lt.locator(f'.panel .light-row[data-layer="{row}"] input[type=color]').evaluate(
+            "(e, v) => { e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", value)
+    inp2 = lt.locator('.panel .light-row[data-layer="2"] input[type=color]').element_handle()
+    pick_color(2, "#ff0000")
+    lt.wait_for_function("() => window.__mock.lights.colors[2].join() === '255,0,0'")
+    assert mock(lt, "m.ledColor().join()") == "48,0,0", mock(lt, "m.ledColor()")  # shown for a moment on layer 0
+    expect(lt.locator(".panel .lights-note")).to_have_text("✓ Saved on your TOTEM", timeout=4000)
+    assert mock(lt, "m.lightsSaved.colors[2].join()") == "255,0,0"
+    assert inp2.evaluate("e => e.isConnected"), "the colour input was replaced while picking (would close the picker)"
+    expect(lt.locator('.panel .light-row[data-layer="2"]')).to_have_attribute("data-color", "#ff0000")
+    ok("picking a colour: shows on the keyboard at once (preview), saved on it after a moment; the picker stays open")
+
+    saves = mock(lt, "m.lightSaves")
+    sets = mock(lt, "m.lightSets")
+    lt.locator('.panel .light-row[data-layer="1"] input[type=color]').evaluate(
+        """e => { for (let i = 0; i < 30; i++) { e.value = '#' + [i * 8, 255 - i * 8, 0].map(v => v.toString(16).padStart(2, '0')).join('');
+                  e.dispatchEvent(new Event('input', { bubbles: true })); } }""")  # a quick drag: 30 colours at once
+    lt.wait_for_function("() => window.__mock.lights.colors[1].join() === '232,23,0'")
+    expect(lt.locator(".panel .lights-note")).to_have_text("✓ Saved on your TOTEM", timeout=4000)
+    assert mock(lt, "m.lightsSaved.colors[1].join()") == "232,23,0"
+    d_sets, d_saves = mock(lt, "m.lightSets") - sets, mock(lt, "m.lightSaves") - saves
+    assert d_sets < 30 and d_saves <= 2, (d_sets, d_saves)
+    ok(f"dragging through 30 colours: the keyboard gets {d_sets} updates (latest only) and {d_saves} save, ending on the last colour")
+
+    off3 = lt.locator('.panel .light-row[data-layer="3"] .light-off')
+    off3.click()
+    lt.wait_for_function("() => window.__mock.lights.colors[3].join() === '0,0,0'")
+    expect(lt.locator('.panel .light-row[data-layer="3"]')).to_have_class(re.compile(r"\boff\b"))
+    expect(lt.locator('.panel .light-row[data-layer="3"] .light-off')).to_have_attribute("aria-pressed", "true")
+    lt.locator('.panel .light-row[data-layer="3"] .light-off').click()
+    lt.wait_for_function("() => window.__mock.lights.colors[3].join() === '0,255,60'")
+    expect(lt.locator('.panel .light-row[data-layer="3"]')).not_to_have_class(re.compile(r"\boff\b"))  # re-rendered
+    ok("Off turns a layer's light off and back on with its colour")
+
+    lt.locator('.panel input[aria-label="Brightness"]').evaluate("e => { e.value = '100'; e.dispatchEvent(new Event('input', { bubbles: true })); }")
+    lt.wait_for_function("() => window.__mock.lights.brightness === 255")
+    expect(lt.locator(".panel .ov-val").first).to_have_text("100 %")
+    ok("brightness slider sets the LEDs' brightness")
+
+    # turn off after a while without a key press; effects per layer and their speed
+    expect(lt.locator(".panel .light-timeout")).to_have_value("0")
+    lt.locator(".panel .light-timeout").select_option("300")
+    lt.wait_for_function("() => window.__mock.lights.timeout === 300")
+    lt.locator('.panel .light-row[data-layer="2"] .light-effect').select_option("1")
+    lt.wait_for_function("() => window.__mock.lights.effects[2] === 1")
+    lt.locator('.panel .light-row[data-layer="4"] .light-effect').select_option("2")
+    lt.wait_for_function("() => window.__mock.lights.effects[4] === 2")
+    expect(lt.locator('.panel .light-row[data-layer="4"] .light-rainbow')).to_be_visible()
+    expect(lt.locator('.panel .light-row[data-layer="4"] input[type=color]')).to_have_count(0)
+    lt.locator('.panel input[aria-label="Effect speed"]').evaluate("e => { e.value = '80'; e.dispatchEvent(new Event('input', { bubbles: true })); }")
+    lt.wait_for_function("() => window.__mock.lights.speed === 204")
+    expect(lt.locator(".panel .lights-note")).to_have_text("✓ Saved on your TOTEM", timeout=4000)
+    assert mock(lt, "m.lightsSaved.timeout === 300 && m.lightsSaved.effects[2] === 1 && m.lightsSaved.effects[4] === 2 && m.lightsSaved.speed === 204")
+    lt.locator('.panel .light-row[data-layer="4"] .light-off').click()  # off: a rainbow would ignore the colour
+    lt.wait_for_function("() => window.__mock.lights.effects[4] === 0 && window.__mock.lights.colors[4].join() === '0,0,0'")
+    lt.locator('.panel .light-row[data-layer="4"] .light-off').click()
+    lt.wait_for_function("() => window.__mock.lights.colors[4].join() === '255,0,180'")
+    lt.locator('.panel .light-row[data-layer="4"] .light-effect').select_option("2")
+    lt.wait_for_function("() => window.__mock.lights.effects[4] === 2")
+    shot(lt, "e2e-28b-layer-lights-effects.png")
+    ok("turn off after 5 minutes idle; breathe and rainbow per layer; effect speed; all saved on the keyboard")
+
+    lt.locator(".panel button", has_text="Editor's layer colours").click()
+    lt.wait_for_function("() => window.__mock.lights.colors[1].join() === '55,156,215'")  # the editor's layer 1 (#379cd7)
+    assert mock(lt, "m.lights.colors[0].join()") == "0,0,0" and mock(lt, "m.lights.colors[4].join()") == "181,80,138"
+    lt.locator(".panel button", has_text="Defaults").click()
+    lt.wait_for_function("() => window.__mock.lights.brightness === 48 && window.__mock.lights.colors[2].join() === '0,90,255' && window.__mock.lights.timeout === 0 && window.__mock.lights.speed === 128 && window.__mock.lights.effects.every(e => e === 0)")
+    expect(lt.locator(".panel .lights-note")).to_have_text("✓ Saved on your TOTEM", timeout=4000)
+    assert mock(lt, "JSON.stringify(m.lightsSaved) === JSON.stringify(m.lights)")
+    lt.locator(".panel button", has_text="All off").click()
+    lt.wait_for_function("() => window.__mock.lights.colors.slice(0, 5).every(c => c.join() === '0,0,0')")
+    expect(lt.locator(".panel .light-row.off")).to_have_count(5)
+    ok("Editor's layer colours (base layer kept), Defaults and All off; all saved")
+
+    lt.emulate_media(color_scheme="dark")
+    lt.locator(".panel button", has_text="Defaults").click()
+    lt.wait_for_timeout(300)
+    shot(lt, "e2e-29-layer-lights-dark.png")
+    lt.set_viewport_size({"width": 390, "height": 844})
+    lt.wait_for_timeout(200)
+    shot(lt, "e2e-30-layer-lights-phone.png")
+
+    nolight = overlay_page("{ noLights: true }", page="")
+    nolight.set_viewport_size({"width": 1440, "height": 900})
+    nolight.wait_for_selector(".stage .board .key")
+    nav(nolight, "Layer Lights")
+    expect(nolight.locator('.panel .notice[data-lights="no"]')).to_contain_text("totem_vial_keybard_left.uf2")
+    expect(nolight.locator(".panel .light-row")).to_have_count(0)
+    noreport = overlay_page("{ noOverlay: true }", page="")
+    noreport.set_viewport_size({"width": 1440, "height": 900})
+    noreport.wait_for_selector(".stage .board .key")
+    nav(noreport, "Layer Lights")
+    expect(noreport.locator('.panel .notice[data-lights="no"]')).to_be_visible()
+    ok("older firmware (overlay report without lights, or no report): says to flash the new firmware")
 
     assert not errors, errors
     print(f"\nALL {len(passed)} CHECKS PASSED  (screenshots in {SHOTS})")

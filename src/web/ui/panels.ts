@@ -1,7 +1,27 @@
 // Settings, key tester and about panels.
 import { QMK_SETTINGS } from "../qmk-settings";
 import { overlayHost } from "../overlay-settings";
-import { checkOverlaySupport, ensureUnlocked, lockKeyboard, savePrefs, startTester, state, stopTester, updateSetting } from "../store";
+import { DEFAULT_BRIGHTNESS, DEFAULT_LIGHTS, DEFAULT_SPEED, EFFECTS, type Rgb } from "../overlay-protocol";
+import {
+    checkOverlaySupport,
+    ensureUnlocked,
+    invalidate,
+    lockKeyboard,
+    nameOf,
+    onLightsNote,
+    readLights,
+    savePrefs,
+    setLayerEffect,
+    setLayerLight,
+    setLightBrightness,
+    setLightSpeed,
+    setLightTimeout,
+    startTester,
+    state,
+    stopTester,
+    updateSetting,
+} from "../store";
+import { layerColor } from "../totem";
 import { h } from "./dom";
 import { layoutSelect } from "./picker";
 
@@ -244,4 +264,189 @@ export function overlayPanel(): HTMLElement {
                   ),
               ),
     );
+}
+
+// ---------------------------------------------------------------- layer lights
+
+const toHex = (c: Rgb) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+const fromHex = (hex: string): Rgb => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as Rgb;
+const isOff = (c: Rgb) => !c[0] && !c[1] && !c[2];
+const lastLit = new Map<number, Rgb>(); // colours of lights turned off, to turn them on again
+
+const flashNote = (...more: (string | HTMLElement)[]) =>
+    h(
+        "div",
+        { class: "notice warn", dataset: { lights: "no" } },
+        "Your TOTEM's firmware has no layer lights. Flash ",
+        h("b", null, "totem_vial_keybard_left.uf2"),
+        " and ",
+        h("b", null, "…_right.uf2"),
+        " from the firmware folder (see “Firmware” in the README; save your layout as a .vil first).",
+        ...more,
+    );
+
+export function lightsPanel(): HTMLElement {
+    onLightsNote(null);
+    const intro = h(
+        "p",
+        { style: "margin-top:0;line-height:1.55" },
+        "The RGB LED on each half's XIAO RP2040 shows the colour of the layer you're on (the highest layer that's on), steady, breathing or as a rainbow. It shines through a clear or white case. What you pick shows on the keyboard for a moment, and is saved on it.",
+    );
+    if (!state.connected) return h("div", null, intro, h("div", { class: "notice" }, "Connect your TOTEM to set its layer lights."));
+    if (state.lightsSupport === null) {
+        if (state.lightsError)
+            return h(
+                "div",
+                null,
+                intro,
+                h("div", { class: "notice warn" }, `Couldn't read the light colours: ${state.lightsError}`),
+                h("button", { class: "pill", onClick: () => (state.lightsError = null, void readLights(), invalidate("panel")) }, "Try again"),
+            );
+        void readLights();
+        return h("div", null, intro, h("div", { class: "notice" }, "Reading the light colours from your TOTEM…"));
+    }
+    if (!state.lightsSupport || !state.lights) return h("div", null, intro, flashNote());
+
+    const L = state.lights;
+    const noteText = () => {
+        const n = state.lightsNote;
+        return n === "saving" ? "Saving on your TOTEM…" : n === "saved" ? "✓ Saved on your TOTEM" : n ? n.replace(/^error: /, "Couldn't save: ") : "Kept on your TOTEM.";
+    };
+    const note = h("div", { class: "small muted lights-note", role: "status" });
+    const syncNote = () => {
+        note.textContent = noteText();
+        note.dataset.state = state.lightsNote.split(":")[0];
+    };
+    syncNote();
+    onLightsNote(syncNote);
+
+    const pct = Math.round((L.brightness / 255) * 100);
+    const pctOut = h("span", { class: "ov-val" }, `${pct} %`);
+    const bright = h("input", { type: "range", min: 0, max: 100, step: 1, value: String(pct), "aria-label": "Brightness" });
+    bright.addEventListener("input", () => {
+        pctOut.textContent = `${bright.value} %`;
+        setLightBrightness(Math.round(Number(bright.value) * 2.55));
+    });
+
+    const speedPct = Math.round((L.speed / 255) * 100);
+    const speedOut = h("span", { class: "ov-val" }, `${speedPct} %`);
+    const speed = h("input", { type: "range", min: 0, max: 100, step: 1, value: String(speedPct), "aria-label": "Effect speed" });
+    speed.addEventListener("input", () => {
+        speedOut.textContent = `${speed.value} %`;
+        setLightSpeed(Math.round(Number(speed.value) * 2.55));
+    });
+    // turn off after: the usual choices, plus whatever the keyboard has
+    const times: [number, string][] = [
+        [0, "Never"],
+        [30, "30 seconds"],
+        [60, "1 minute"],
+        [120, "2 minutes"],
+        [300, "5 minutes"],
+        [600, "10 minutes"],
+        [1800, "30 minutes"],
+        [3600, "1 hour"],
+    ];
+    if (!times.some(([s]) => s === L.timeout)) times.push([L.timeout, L.timeout % 60 ? `${L.timeout} seconds` : `${L.timeout / 60} minutes`]);
+    const timeout = h(
+        "select",
+        { class: "light-timeout", "aria-label": "Turn the lights off after" },
+        times.map(([s, t]) => h("option", { value: String(s), selected: s === L.timeout }, t)),
+    );
+    timeout.addEventListener("change", () => setLightTimeout(Number(timeout.value)));
+
+    const n = Math.min(state.kb!.layers, L.colors.length);
+    const setAll = (colors: Rgb[]) => {
+        for (let l = 0; l < n; l++) setLayerLight(l, colors[l]);
+        invalidate("panel");
+    };
+    return h(
+        "div",
+        { class: "lights" },
+        intro,
+        h("label", { class: "ov-row" }, h("span", { class: "ov-lbl" }, "Brightness"), bright, pctOut),
+        h("label", { class: "ov-row" }, h("span", { class: "ov-lbl" }, "Effect speed"), speed, speedOut),
+        h("label", { class: "ov-row" }, h("span", { class: "ov-lbl" }, "Turn off after"), timeout, h("span", { class: "small muted" }, "without a key press")),
+        h("div", { class: "light-list" }, Array.from({ length: n }, (_, l) => lightRow(l))),
+        note,
+        h(
+            "div",
+            { class: "row wrap", style: "margin-top:12px" },
+            h(
+                "button",
+                { class: "pill ghost", title: "Each layer gets its colour from the layer tabs; the base layer stays as it is", onClick: () => setAll(Array.from({ length: n }, (_, l) => (l === 0 ? L.colors[0] : fromHex(layerColor(l).hex)))) },
+                "Editor's layer colours",
+            ),
+            h(
+                "button",
+                {
+                    class: "pill ghost",
+                    onClick: () => {
+                        for (let l = 0; l < n; l++) setLayerEffect(l, 0);
+                        setLightSpeed(DEFAULT_SPEED);
+                        setLightTimeout(0);
+                        setLightBrightness(DEFAULT_BRIGHTNESS);
+                        setAll(DEFAULT_LIGHTS);
+                    },
+                },
+                "Defaults",
+            ),
+            h("button", { class: "pill ghost", onClick: () => setAll(Array.from({ length: n }, () => [0, 0, 0] as Rgb)) }, "All off"),
+        ),
+        h("p", { class: "small muted" }, "The lights go dark while your computer sleeps. They aren't part of .vil files: they stay on the keyboard."),
+    );
+}
+
+function lightRow(l: number): HTMLElement {
+    const c = state.lights!.colors[l];
+    const off = isOff(c);
+    const shown = off ? (lastLit.get(l) ?? fromHex(layerColor(l).hex)) : c;
+    const rainbow = state.lights!.effects[l] === 2;
+    const inp = h("input", { type: "color", value: toHex(shown), title: off ? "off" : toHex(c), "aria-label": `Light colour of layer ${l}` });
+    const effect = h(
+        "select",
+        { class: "light-effect", "aria-label": `Light effect of layer ${l}`, title: "Steady, breathing in this colour, or a rainbow (which ignores the colour)" },
+        EFFECTS.map((name, i) => h("option", { value: String(i), selected: i === state.lights!.effects[l] }, name)),
+    );
+    effect.addEventListener("change", () => {
+        setLayerEffect(l, Number(effect.value));
+        invalidate("panel");
+    });
+    const offBtn = h(
+        "button",
+        {
+            class: ["light-off", off && "on"],
+            "aria-pressed": String(off),
+            title: off ? "Light this layer again" : "No light on this layer",
+            onClick: () => {
+                const now = state.lights!.colors[l];
+                if (isOff(now)) setLayerLight(l, lastLit.get(l) ?? fromHex(inp.value));
+                else {
+                    lastLit.set(l, [...now]);
+                    setLayerLight(l, [0, 0, 0]);
+                    if (state.lights!.effects[l] === 2) setLayerEffect(l, 0); // a rainbow ignores the colour: steady, so off is off
+                }
+                invalidate("panel");
+            },
+        },
+        "Off",
+    );
+    const row = h(
+        "div",
+        { class: ["light-row", off && "off", rainbow && "rainbow"], dataset: { layer: String(l), color: off ? "off" : toHex(c) } },
+        h("span", { class: "light-num" }, String(l)),
+        h("span", { class: "light-name" }, nameOf("layer", l) ?? `Layer ${l}`),
+        rainbow ? h("span", { class: "light-rainbow", title: "Rainbow: goes round the colour wheel" }) : inp,
+        effect,
+        offBtn,
+    );
+    inp.addEventListener("input", () => {
+        // update this row only: re-rendering would close the colour picker
+        setLayerLight(l, fromHex(inp.value));
+        row.classList.remove("off");
+        row.dataset.color = inp.value;
+        inp.title = inp.value;
+        offBtn.classList.remove("on");
+        offBtn.setAttribute("aria-pressed", "false");
+    });
+    return row;
 }

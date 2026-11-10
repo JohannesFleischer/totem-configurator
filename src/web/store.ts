@@ -26,9 +26,11 @@ import {
 } from "./model";
 import { demoKeyboard, DEFAULT_UNLOCK_KEYS, LAYOUT_ORDER } from "./totem";
 import { NotVialError, OldVialError, TOTEM_UID, UnlockPendingError, Vial } from "./vial";
-import { OverlayClient } from "./overlay-protocol";
+import { addStoredLayer, codesOf, isEmptyLayer, storedLayers } from "./layer-library";
+import { overlayHost } from "./overlay-settings";
+import { LIGHTS_VERSION, NoOverlayReport, OverlayClient, type Lights, type Rgb } from "./overlay-protocol";
 
-export type PanelId = "keys" | "special" | "layers" | "tapdance" | "macros" | "combos" | "overrides" | "settings" | "tester" | "overlay" | "about";
+export type PanelId = "keys" | "special" | "layers" | "stored" | "tapdance" | "macros" | "combos" | "overrides" | "settings" | "tester" | "overlay" | "lights" | "about";
 export type TdSlot = "onTap" | "onHold" | "onDoubleTap" | "onTapHold";
 export type Target =
     | { kind: "key"; layer: number; row: number; col: number }
@@ -84,9 +86,14 @@ export const state = {
     selection: [] as number[],
     multiSelect: false, // "Select multiple": plain clicks add and remove keys
     lock: null as null | { code: number | null }, // "Lock key": each click on the TOTEM puts `code` on that key
-    swapFrom: null as null | { layer: number; pos: number }, // "Swap": waiting for the second key
+    swapMode: false, // "Swap": every two keys clicked are swapped, until it's turned off
+    swapFrom: null as null | { layer: number; pos: number }, // swap mode: the first key of a pair, waiting for the second
     flash: null as null | { layer: number; keys: number[] }, // keys that just changed, briefly highlighted
     overlaySupport: null as boolean | null, // does the connected firmware report the live layer? (null: not checked)
+    lights: null as Lights | null, // the layer light colours on the connected TOTEM (null: not read)
+    lightsSupport: null as boolean | null, // does its firmware have layer lights? (null: not checked)
+    lightsError: null as string | null, // reading them failed
+    lightsNote: "" as "" | "saving" | "saved" | `error: ${string}`, // what happened to the last change
 };
 
 // ---------------------------------------------------------------------------
@@ -189,7 +196,7 @@ export function mouseKeysSupported(): boolean | null {
 // Notifications and dialogs (implemented by the UI)
 
 export const ui = {
-    toast: (_msg: string, _kind: "info" | "error" | "ok" = "info", _id?: string) => {},
+    toast: (_msg: string, _kind: "info" | "error" | "ok" = "info", _id?: string, _ms?: number) => {},
     confirm: async (_title: string, _body: string, _ok = "OK"): Promise<boolean> => true,
     unlock: async (_keys: [number, number][]): Promise<boolean> => false,
 };
@@ -445,6 +452,8 @@ export function saveFile() {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    // the overlay app says where it put the file (onSaved); a browser shows its own downloads
+    if (!overlayHost()?.onSaved) ui.toast(`Saved ${a.download} to your browser's downloads folder.`, "ok", "saved", 6000);
 }
 
 /** Write a whole layout to the connected keyboard, sending only what differs (one undo step). */
@@ -550,7 +559,7 @@ export function targetCode(t: Target | null): number | null {
 
 /** Apply a wrap (mods / mod-tap / layer-tap) chosen in the picker to a basic keycode. */
 export function wrapCode(code: number): number {
-    if (state.wrap === "none" || code > 0xff) return code;
+    if (state.wrap === "none" || state.panel !== "keys" || code > 0xff) return code; // the wrap belongs to Standard Keys
     const mods = state.wrapMods | (state.wrapRight && state.wrapMods ? 0x10 : 0);
     if (state.wrap === "mod") return mods ? (mods << 8) | code : code;
     if (state.wrap === "modtap") return mods ? 0x2000 | (mods << 8) | code : code;
@@ -714,37 +723,37 @@ export async function swapKeys(a: KeyRef, b: KeyRef, copy = false): Promise<bool
 }
 
 /**
- * The Swap button: two selected keys are swapped right away; with one, the next key you
- * click (on any layer) is swapped with it.
+ * The Swap button turns swap mode on and off. While it's on, every two keys you click (on any
+ * layers) are swapped: click one, click the other, then the next pair. Turning it on with two
+ * keys selected swaps those first; with one selected, that's the first key of the first pair.
  */
-export async function startSwap() {
+export async function toggleSwap() {
+    if (state.swapMode) return stopModes();
     const t = state.target;
-    const keys = selectedKeys();
-    if (!t || t.kind !== "key") return;
-    if (keys.length === 2) {
-        await swapKeys({ layer: t.layer, i: keys[0] }, { layer: t.layer, i: keys[1] });
-        return;
-    }
-    if (keys.length !== 1) return;
+    const keys = t?.kind === "key" ? selectedKeys() : [];
     state.lock = null;
-    state.swapFrom = { layer: t.layer, pos: keys[0] };
+    state.swapMode = true;
+    state.swapFrom = t?.kind === "key" && keys.length === 1 ? { layer: t.layer, pos: keys[0] } : null;
+    state.target = null;
+    state.selection = [];
     invalidate("board", "panel");
+    if (t?.kind === "key" && keys.length === 2) await swapKeys({ layer: t.layer, i: keys[0] }, { layer: t.layer, i: keys[1] });
 }
 
-/** Swap mode: the second key was clicked. Clicking the first key again cancels. */
-export async function finishSwap(layer: number, row: number, col: number) {
+/** Swap mode: a key was clicked. The first of a pair waits; the second swaps. Clicking the first again takes it back. */
+export async function swapClick(layer: number, row: number, col: number) {
     const from = state.swapFrom;
-    state.swapFrom = null;
-    invalidate("board");
-    if (!from) return;
     const p = idx(row, col);
-    if (from.layer === layer && from.pos === p) return;
-    if (await swapKeys({ layer: from.layer, i: from.pos }, { layer, i: p })) setKeySelection(layer, [p]);
+    state.swapFrom = from ? null : { layer, pos: p };
+    invalidate("board", "panel");
+    if (!from || (from.layer === layer && from.pos === p)) return;
+    await swapKeys({ layer: from.layer, i: from.pos }, { layer, i: p });
 }
 
 /** Start "Lock key": every click on the TOTEM puts `code` on that key until it's stopped. */
 export function startLock(code: number | null) {
     state.lock = { code };
+    state.swapMode = false;
     state.swapFrom = null;
     state.target = null;
     state.selection = [];
@@ -776,15 +785,16 @@ export async function lockApply(layer: number, row: number, col: number) {
 
 /** End "Lock key" and swap mode. */
 export function stopModes() {
-    if (!state.lock && !state.swapFrom) return;
+    if (!state.lock && !state.swapMode) return;
     state.lock = null;
+    state.swapMode = false;
     state.swapFrom = null;
     invalidate("board", "panel");
 }
 
 /** Esc: end a mode, then clear the selection, then turn off "Select multiple". */
 export function escape(): boolean {
-    if (state.lock || state.swapFrom) {
+    if (state.lock || state.swapMode) {
         stopModes();
         return true;
     }
@@ -914,15 +924,210 @@ export async function checkOverlaySupport() {
     invalidate("panel");
 }
 
+// ---------------------------------------------------------------------------
+// Layer lights (firmware/layer_lights.c): the RGB LED on each half shows the layer's colour.
+// Read and set through the overlay report; a change shows on the keyboard at once and is
+// saved on it a moment after the last one.
+
+let readingLights = false;
+export async function readLights() {
+    if (!state.connected || readingLights) return;
+    readingLights = true;
+    state.lightsError = null;
+    try {
+        const c = new OverlayClient(transport);
+        let version = 0;
+        try {
+            version = await c.version();
+        } catch (e) {
+            if (!(e instanceof NoOverlayReport)) throw e;
+        }
+        state.lights = version >= LIGHTS_VERSION ? await c.lights() : null;
+        state.lightsSupport = version >= LIGHTS_VERSION;
+    } catch (e) {
+        state.lightsError = e instanceof Error ? e.message : String(e);
+    } finally {
+        readingLights = false;
+        invalidate("panel");
+    }
+}
+
+let lightsNoteListener: (() => void) | null = null;
+/** The lights panel's status line follows changes without re-rendering (that would close an open colour picker). */
+export function onLightsNote(fn: (() => void) | null) {
+    lightsNoteListener = fn;
+}
+function lightsNote(note: typeof state.lightsNote) {
+    state.lightsNote = note;
+    lightsNoteListener?.();
+}
+
+const lightWrites = new Map<string, (c: OverlayClient) => Promise<void>>(); // what -> how to send its latest value
+let writingLights = false;
+let lightsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+export function setLayerLight(layer: number, rgb: Rgb) {
+    if (!state.lights || layer >= state.lights.colors.length) return;
+    state.lights.colors[layer] = [...rgb];
+    queueLight(`colour ${layer}`, (c) => c.setLight(layer, rgb));
+}
+
+export function setLayerEffect(layer: number, effect: number) {
+    if (!state.lights || layer >= state.lights.effects.length) return;
+    state.lights.effects[layer] = effect;
+    queueLight(`effect ${layer}`, (c) => c.setLightEffect(layer, effect));
+}
+
+export function setLightSpeed(value: number) {
+    if (!state.lights) return;
+    state.lights.speed = value;
+    queueLight("speed", (c) => c.setLightSpeed(value));
+}
+
+/** Seconds without a key press until the LEDs go dark; 0 = never. */
+export function setLightTimeout(seconds: number) {
+    if (!state.lights) return;
+    state.lights.timeout = seconds;
+    queueLight("timeout", (c) => c.setLightTimeout(seconds));
+}
+
+export function setLightBrightness(value: number) {
+    if (!state.lights) return;
+    state.lights.brightness = value;
+    queueLight("brightness", (c) => c.setBrightness(value));
+}
+
+function queueLight(which: string, send: (c: OverlayClient) => Promise<void>) {
+    lightWrites.set(which, send);
+    clearTimeout(lightsSaveTimer);
+    lightsNote("saving");
+    void writeLights();
+}
+
+async function writeLights() {
+    if (writingLights) return;
+    writingLights = true;
+    try {
+        const c = new OverlayClient(transport);
+        while (lightWrites.size) {
+            const [which, send] = lightWrites.entries().next().value!;
+            lightWrites.delete(which);
+            await send(c);
+        }
+        clearTimeout(lightsSaveTimer);
+        lightsSaveTimer = setTimeout(() => void saveLightsNow(), 700);
+    } catch (e) {
+        lightWrites.clear();
+        lightsNote(`error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+        writingLights = false;
+    }
+}
+
+async function saveLightsNow() {
+    if (writingLights || lightWrites.size || !state.connected) return; // a newer change saves later
+    try {
+        await new OverlayClient(transport).saveLights();
+        if (!writingLights && !lightWrites.size) lightsNote("saved");
+    } catch (e) {
+        lightsNote(`error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stored layers (layer-library.ts): keep a layer aside, load one into a layer.
+
+const layerSource = () => (state.connected ? "TOTEM" : state.source === "file" ? state.fileName || "a .vil file" : "the demo layout");
+
+/** Keep a copy of a layer among the stored layers. */
+export function storeLayer(layer: number) {
+    const kb = state.kb;
+    if (!kb) return;
+    const { entry, added } = addStoredLayer(nameOf("layer", layer) ?? `Layer ${layer}`, kb.keymap[layer], layerSource());
+    ui.toast(added ? `Stored “${entry.name}”.` : `That layer is stored already, as “${entry.name}”.`, added ? "ok" : "info", "stored");
+    invalidate("panel");
+}
+
+/**
+ * Put a stored layer's keys (and name) on a layer, as one step to undo. What was on that layer
+ * is stored first (unless it's empty or stored already), so nothing gets lost.
+ */
+export async function loadStoredLayer(id: string, layer: number): Promise<boolean> {
+    const kb = state.kb;
+    const entry = storedLayers().find((e) => e.id === id);
+    if (!kb || !entry) return false;
+    const cur = kb.keymap[layer];
+    const codes = codesOf(entry, cur.length);
+    const curName = nameOf("layer", layer);
+    // the stored name becomes the layer's name, unless it's just "Layer N" (then the layer has none)
+    const newName = /^Layer \d+$/.test(entry.name) ? undefined : entry.name.slice(0, MAX_NAME);
+    const changes: Change[] = [];
+    codes.forEach((c, i) => c !== cur[i] && changes.push({ t: "key", layer, i, from: cur[i], to: c }));
+    if (!changes.length) {
+        ui.toast(`Layer ${layer} has these keys already.`, "info", "stored");
+        return false;
+    }
+    let kept = "";
+    if (!isEmptyLayer(cur)) {
+        const r = addStoredLayer(curName ?? `Layer ${layer}`, cur, layerSource());
+        if (r.added) kept = r.entry.name;
+    }
+    if (curName !== newName) {
+        const to = deep(namesBase);
+        if (newName) to.layer[String(layer)] = newName;
+        else delete to.layer[String(layer)];
+        changes.push({ t: "names", from: deep(namesBase), to });
+    }
+    const ok = await commit(`Load “${entry.name}” into layer ${layer}`, changes);
+    if (ok) {
+        ui.toast(`Loaded “${entry.name}” into layer ${layer}.${kept ? ` What was there is stored as “${kept}”.` : ""}`, "ok", "stored", 6000);
+        if (state.layer === layer) flashKeys(layer, changes.filter((c) => c.t === "key").map((c) => (c as { i: number }).i));
+    }
+    invalidate("panel");
+    return ok;
+}
+
+/** Store every layer of a .vil file that has keys on it. */
+export async function importStoredLayers(file: File) {
+    const kb = state.kb;
+    if (!kb) return;
+    let data: KeyboardData;
+    try {
+        if (file.size > 1024 * 1024) throw new Error("That file is too big to be a layout (over 1 MB).");
+        data = fromVil(await file.text(), kb);
+    } catch (e) {
+        ui.toast(`Couldn't read “${file.name}”: ${e instanceof Error ? e.message : String(e)}`, "error");
+        return;
+    }
+    let added = 0,
+        known = 0;
+    data.keymap.forEach((codes, l) => {
+        if (isEmptyLayer(codes)) return;
+        if (addStoredLayer(data.names.layer[String(l)] ?? `Layer ${l}`, codes, file.name).added) added++;
+        else known++;
+    });
+    ui.toast(
+        added ? `Stored ${added} layer${added === 1 ? "" : "s"} from “${file.name}”${known ? ` (${known} stored already)` : ""}.` : `Every layer of “${file.name}” is stored already.`,
+        added ? "ok" : "info",
+        "stored",
+    );
+    invalidate("panel");
+}
+
 /** Start a fresh history (and selection) for newly loaded data. */
 function resetHistory() {
     history.undo = [];
     history.redo = [];
     state.selection = [];
     state.lock = null;
+    state.swapMode = false;
     state.swapFrom = null;
     state.flash = null;
     state.overlaySupport = null;
+    state.lights = null;
+    state.lightsSupport = null;
+    state.lightsError = null;
+    state.lightsNote = "";
     macrosBase = deep(state.kb?.macros ?? []);
     macrosOnDevice = state.connected ? deep(state.kb?.macros ?? []) : [];
     namesBase = deep(state.kb?.names ?? emptyNames());

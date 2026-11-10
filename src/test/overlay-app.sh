@@ -12,7 +12,7 @@ export TOTEM_OVERLAY_TEST_SCRIPT="$ROOT/test/overlay-app-test.cjs"
 export TOTEM_OVERLAY_TEST_OUT="$OUT"
 export ELECTRON_DISABLE_SECURITY_WARNINGS=1
 HOME_DIR="$(mktemp -d)"  # a fresh profile: first start
-unset NODE_OPTIONS; timeout 120 xvfb-run -a -s "-screen 0 1600x1000x24" env HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+unset NODE_OPTIONS NIRI_SOCKET; timeout 120 xvfb-run -a -s "-screen 0 1600x1000x24" env HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
     "$ELECTRON" --no-sandbox "$APP" 2>&1 > "$OUT/app-log.txt" 2>&1 || true
 grep -E "^  ok|FAILED" "$OUT/app-log.txt" || true
 python3 -c "import json,sys; r=json.load(open('$OUT/app-results.json')); print('ALL', len(r['results']), 'APP CHECKS PASSED' if r['ok'] else 'FAILED: ' + r['error']); sys.exit(0 if r['ok'] else 1)"
@@ -29,5 +29,14 @@ python3 -c "import json,sys; r=json.load(open('$OUT/prod-results.json')); [print
 HOME_DIR="$(mktemp -d)"
 export TOTEM_OVERLAY_TEST_SCRIPT="$ROOT/test/overlay-app-editor.cjs"
 timeout 120 xvfb-run -a -s "-screen 0 1600x1000x24" env HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
-    "$ELECTRON" --no-sandbox "$APP" --editor > "$OUT/editor-log.txt" 2>&1 || true
+    TOTEM_KEYBARD_TITLEBAR=own TOTEM_KEYBARD_THEME=dark "$ELECTRON" --no-sandbox "$APP" --editor > "$OUT/editor-log.txt" 2>&1 || true
 python3 -c "import json,sys; r=json.load(open('$OUT/editor-results.json')); [print('  ok -', x) for x in r['results']]; print('ALL', len(r['results']), 'EDITOR-MODE CHECKS PASSED' if r['ok'] else 'FAILED: ' + r['error']); sys.exit(0 if r['ok'] else 1)"
+
+# Under niri: the same app with a stand-in for niri's IPC socket.
+HOME_DIR="$(mktemp -d)"
+export TOTEM_OVERLAY_TEST_SCRIPT="$ROOT/test/overlay-app-niri.cjs"
+export NIRI_SOCKET="$HOME_DIR/niri.sock"
+timeout 120 xvfb-run -a -s "-screen 0 1600x1000x24" env HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+    "$ELECTRON" --no-sandbox "$APP" > "$OUT/niri-log.txt" 2>&1 || true
+unset NIRI_SOCKET
+python3 -c "import json,sys; r=json.load(open('$OUT/niri-results.json')); [print('  ok -', x) for x in r['results']]; print('ALL', len(r['results']), 'NIRI CHECKS PASSED' if r['ok'] else 'FAILED: ' + r['error']); sys.exit(0 if r['ok'] else 1)"

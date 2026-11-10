@@ -22,6 +22,24 @@ const host = {
     onCommand: (fn) => {
         ipcRenderer.on("ovl:command", (_e, c) => (c === "unlock" || c === "lock") && fn(c));
     },
+    // the window itself: where the app draws its own title bar (ownBar), the page shows it
+    window: Object.assign(ipcRenderer.sendSync("win:info") || {}, {
+        minimize: () => ipcRenderer.send("win:minimize"),
+        toggleMaximize: () => ipcRenderer.send("win:maximize"),
+        toggleFullscreen: () => ipcRenderer.send("win:fullscreen"),
+        close: () => ipcRenderer.send("win:close"),
+        onState: (fn) => {
+            ipcRenderer.on("win:state", (_e, s) => fn({ maximized: !!(s && s.maximized), fullscreen: !!(s && s.fullscreen) }));
+        },
+    }),
+    // folders and .vil files, for the page's own "Open a layout" (no system file dialog needed)
+    files: {
+        list: (dir) => ipcRenderer.invoke("files:list", dir == null ? null : String(dir)),
+        read: (file) => ipcRenderer.invoke("files:read", String(file)),
+    },
+    onSaved: (fn) => {
+        ipcRenderer.on("ovl:saved", (_e, r) => fn(r && r.file ? { file: String(r.file) } : { error: String((r && r.error) || "failed") }));
+    },
 };
 
 // Tests only: the app was started with a simulated TOTEM, which goes into the page itself.

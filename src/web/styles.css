@@ -415,6 +415,69 @@ html.ovl-settings-page body { background: var(--bg); }
 .ov-preview > div { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 @media (max-width: 640px) { .ov-grid { grid-template-columns: 1fr; } }
 
+/* the window's own title bar (overlay app, where the window has no frame) */
+.winbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 50; display: flex; align-items: center;
+    background: var(--surface); border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none;
+}
+.winbar-title { flex: 1; text-align: center; font-size: 12px; font-weight: 600; color: var(--muted); padding-left: 96px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.winbar-buttons { display: flex; width: 96px; justify-content: flex-end; -webkit-app-region: no-drag; }
+.winbtn { width: 40px; height: 32px; border: 0; background: transparent; color: var(--ink); display: grid; place-items: center; cursor: pointer; }
+.winbtn:hover { background: var(--bg); }
+.winbtn.close:hover { background: #d8304a; color: #fff; }
+html.has-winbar body { padding-top: 32px; }
+html.has-winbar .app { height: calc(100vh - 32px); }
+@media (max-width: 960px) { html.has-winbar .app { height: auto; min-height: calc(100vh - 32px); } }
+
+/* the app's own "Open a layout" */
+.fp-places { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.fp-pathrow { display: flex; gap: 6px; margin-bottom: 8px; }
+.fp-path { flex: 1; min-width: 0; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 0 10px; font: inherit; font-size: 13px; }
+.fp-list { height: min(46vh, 380px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+.fp-row {
+    display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; border: 0; background: transparent;
+    color: var(--ink); padding: 7px 8px; border-radius: 7px; text-align: left; font: inherit; font-size: 13px; cursor: pointer;
+}
+.fp-row:hover, .fp-row:focus-visible { background: var(--bg); outline: none; }
+.fp-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-row .meta { color: var(--muted); font-size: 12px; }
+.fp-row.dir svg, .fp-row.up svg { color: var(--muted); }
+.fp-msg { min-height: 18px; margin-top: 8px; }
+.fp .actions { align-items: center; }
+
+/* stored layers panel */
+.sl-store { display: flex; gap: 8px; align-items: center; }
+.sl-select { height: 30px; min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; padding: 0 6px; }
+.sl-actions .sl-select { flex: 1; }
+.sl-list { display: flex; flex-direction: column; gap: 10px; }
+.sl-card { border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.sl-head { display: flex; align-items: center; gap: 6px; }
+.sl-title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.sl-name { font-weight: 600; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-rename { font: inherit; font-weight: 600; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; background: var(--surface); color: var(--ink); min-width: 0; flex: 1; }
+.sl-board { margin: 2px auto 0; }
+.sl-board .key { font-size: 8px; }
+.sl-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* layer lights panel */
+.light-list { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 8px; }
+.light-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 44px 92px auto; align-items: center; gap: 10px; min-height: 34px; font-size: 13px; }
+.light-num {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    background: var(--chip); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.light-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.light-row input[type="color"] { width: 44px; height: 28px; padding: 0 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; }
+.light-row.off input[type="color"] { opacity: 0.35; }
+.light-row.off .light-name { color: var(--muted); }
+.light-effect, .light-timeout { height: 28px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; padding: 0 6px; min-width: 0; }
+.light-timeout { flex: 1; font-size: 13px; }
+.light-rainbow { width: 44px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.light-row.off .light-effect { opacity: 0.5; }
+.light-off { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.light-off.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.lights-note[data-state="error"] { color: #d8304a; }
+
 /* the overlay while unlocking: opaque, with the keys to hold */
 .ovl-unlock {
     position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; gap: 6px;

@@ -15,12 +15,12 @@ function pick(c: number) {
 
 function key(name: string, cls = "", label?: string): HTMLButtonElement {
     const c = code(name);
-    const wrapping = state.wrap !== "none";
+    const wrapping = state.wrap !== "none" && state.panel === "keys";
     return pickKey(c, { cls, label, onClick: () => pick(c), disabled: wrapping && c > 0xff });
 }
 
 function keys(defs: KeycodeDef[]): HTMLElement {
-    const wrapping = state.wrap !== "none";
+    const wrapping = state.wrap !== "none" && state.panel === "keys";
     return h(
         "div",
         { class: "kflow" },
@@ -111,6 +111,7 @@ function wrapBar(): HTMLElement {
         box.appendChild(
             h("div", { class: "small muted" }, ready ? `Now pick a key below — e.g. A becomes ${serialize(example)}` : "Choose at least one modifier, then pick a key below."),
         );
+        box.appendChild(h("div", { class: "small muted wrap-note" }, "Greyed-out keys can't be combined with this (choose Plain for them). The other tabs aren't affected."));
     }
     return box;
 }
@@ -190,7 +191,7 @@ export function standardKeys(): HTMLElement {
 /** Every character the computer's layout types with Shift / AltGr, grouped by modifier. */
 function symbolsSection(): HTMLElement {
     const layout = activeLayout();
-    const wrapping = state.wrap !== "none";
+    const wrapping = state.wrap !== "none" && state.panel === "keys";
     const groups = new Map<string, HTMLElement[]>();
     const seen = new Set<string>();
     const syms = symbolsOf(layout).sort(([a], [b]) => ((a >> 8) & 0x1f) - ((b >> 8) & 0x1f) || (a & 0xff) - (b & 0xff));
