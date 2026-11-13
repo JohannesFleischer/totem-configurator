@@ -6,8 +6,8 @@ split keyboard running [Vial](https://get.vial.today), modelled on Svalboard's
 your layout and follows the layer you're on — handy while you learn a new layout.
 Not affiliated with Svalboard or GEIST.
 
-> **Disclaimer:** this project is vibecoded (written with an AI assistant) and probably
-> unmaintained. Use it at your own risk, and save your layout as a `.vil` file before flashing.
+> **Disclaimer:** this project is vibecoded (written with an AI assistant) and probably unmaintained.
+> Use it at your own risk, and save your layout as a `.vil` file before flashing.
 
 ## What's here
 
