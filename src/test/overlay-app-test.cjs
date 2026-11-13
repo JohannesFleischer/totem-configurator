@@ -124,6 +124,15 @@ module.exports = async function run(app) {
         if (!panelOk) throw new Error("editor window has no overlayHost");
         ok("editor window knows it runs inside the overlay app");
 
+        // window classes: the editor is its own app for desktop shells, the overlay's windows another
+        const classes = JSON.parse(require("node:child_process").execFileSync("python3", [path.join(__dirname, "x11-classes.py")], { encoding: "utf8" })).map((w) => w.class.join("/"));
+        app.openSettings();
+        await sleep(800);
+        const all = JSON.parse(require("node:child_process").execFileSync("python3", [path.join(__dirname, "x11-classes.py")], { encoding: "utf8" })).map((w) => w.class.join("/"));
+        if (all.filter((c) => c === "totem-keybard/totem-keybard").length !== 1 || all.filter((c) => c === "totem-overlay/totem-overlay").length < 2 || all.some((c) => !/^totem-(keybard|overlay)\/totem-(keybard|overlay)$/.test(c)))
+            throw new Error("window classes: " + JSON.stringify({ classes, all }));
+        ok(`window classes: the editor "totem-keybard", the overlay and its settings "totem-overlay" (${all.length} windows), as in their launcher entries`);
+
         fs.writeFileSync(path.join(out, "app-results.json"), JSON.stringify({ ok: true, results }, null, 2));
     } catch (e) {
         console.error("FAILED:", e.message);

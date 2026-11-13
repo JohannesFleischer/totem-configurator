@@ -17,7 +17,7 @@
           exec = name;
           icon = "${./app}/icon.png";
           categories = [ "Utility" ];
-          startupWMClass = "totem-overlay"; # the app's windows, so the launcher groups them
+          startupWMClass = name; # each app's windows have their own class: totem-keybard, totem-overlay
         };
     in
     {

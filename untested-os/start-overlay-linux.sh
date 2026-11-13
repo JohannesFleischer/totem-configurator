@@ -59,7 +59,7 @@ fi
 if [ "${1:-}" = "--add-to-launcher" ]; then
     # desktop entries that start this script where it is now (move the folder: run this again)
     quoted() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/[\\"`$]/\\&/g' -e 's/%/%%/g')"; }
-    entry() { # file, name, comment, extra argument
+    entry() { # file (= its window class), name, comment, extra argument
         cat > "$APPS/$1.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -68,7 +68,7 @@ Comment=$3
 Exec=$(quoted "$DIR/start-overlay-linux.sh")$4
 Icon=$DIR/app/icon.png
 Categories=Utility;
-StartupWMClass=totem-overlay
+StartupWMClass=$1
 Terminal=false
 EOF
     }

@@ -11,12 +11,12 @@ Not affiliated with Svalboard or GEIST.
 
 ## What's here
 
-| Folder | |
-|---|---|
-| `src/` | the source: the web app (`web/`), the overlay's Electron files (`electron/`), tests, data generators, `build.ts` |
-| `nix/` | NixOS: `totem-keybard.nix` (a dendritic flake part), `shell.nix`, and `app/` with the prebuilt files both run |
-| `untested-os/` | everything else: `totem-keybard.html` (the configurator as a single file) and start scripts for the overlay on Windows, macOS and other Linux distributions |
-| `firmware/` | TOTEM Vial firmware with mouse and media keys, layer lights and the overlay's layer report; patch and build notes |
+| Folder         |                                                                                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/`         | the source: the web app (`web/`), the overlay's Electron files (`electron/`), tests, data generators, `build.ts`                                                         |
+| `nix/`         | NixOS: `package.nix` (used by `flake.nix` at the top), `totem-keybard.nix` (a dendritic flake part to copy in), `shell.nix`, and `app/` with the prebuilt files they run |
+| `untested-os/` | everything else: `totem-keybard.html` (the configurator as a single file) and start scripts for the overlay on Windows, macOS and other Linux distributions              |
+| `firmware/`    | TOTEM Vial firmware with mouse and media keys, layer lights and the overlay's layer report; patch and build notes                                                        |
 
 `nix/app/` and `untested-os/` are built from `src/` and checked in, so nothing has to be built to use them.
 
@@ -54,16 +54,34 @@ place it, and remembers where you put it; the app's windows there draw their own
 Held keys light up while the keyboard is unlocked: tray → "Unlock to show held keys…" (or the
 button in its settings) turns the overlay into a prompt showing the two keys to hold.
 
-**NixOS:** copy `nix/totem-keybard.nix` and `nix/app/` into your flake-parts modules folder,
-then in your host:
+**NixOS, from this repository as a flake input** (it runs the prebuilt `nix/app/` with your
+system's Electron; nothing is built). In your flake's inputs:
+
+```nix
+totem-keybard = { url = "github:JohannesFleischer/totem-configurator"; inputs.nixpkgs.follows = "nixpkgs"; };
+```
+
+then in a dendritic flake part (or straight in a host's `imports`):
+
+```nix
+{ inputs, ... }: { flake.nixosModules.totem-keybard = inputs.totem-keybard.nixosModules.default; }
+```
+
+and in your host:
 
 ```nix
 imports = [ self.nixosModules.totem-keybard ];
 services.udev.packages = with pkgs; [ vial ]; # Vial's udev rule: access to the keyboard
 ```
 
-This also adds "TOTEM keybard" and "TOTEM Overlay" to your app launcher. You can also try it
-with `nix-shell nix/shell.nix`.
+Or without NixOS: `nix run github:ohannesFleischer/totem-keybard` (the configurator) and `…#overlay`.
+
+**NixOS, copied in instead:** copy `nix/totem-keybard.nix` and `nix/app/` into your flake-parts
+modules folder; the host part is the same.
+
+Either way, "TOTEM keybard" and "TOTEM Overlay" show up in your app launcher as two apps (their
+windows have their own classes, `totem-keybard` and `totem-overlay`), so a shell that switches to
+an open app still starts the other one. You can also try it with `nix-shell nix/shell.nix`.
 
 **Other Linux distributions:** `untested-os/start-overlay-linux.sh --add-to-launcher` adds the
 same two launcher entries for your user (`--remove-from-launcher` takes them out; run it again

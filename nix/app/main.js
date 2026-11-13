@@ -24,6 +24,7 @@ const TEST_SCRIPT = process.env.TOTEM_OVERLAY_TEST_SCRIPT || "";
 const EDITOR_ONLY = process.argv.includes("--editor");
 
 app.setName("TOTEM Overlay");
+app.setDesktopName("totem-overlay.desktop"); // the overlay's windows: class "totem-overlay" (the editor's: see openEditor)
 // The overlay is a few dozen keys: drawing them in software is plenty fast and avoids
 // GPU glitches with transparent windows on some systems.
 app.disableHardwareAcceleration();
@@ -319,6 +320,11 @@ function openEditor() {
         editorWin.focus();
         return editorWin;
     }
+    // Its own window class (X11 WM_CLASS, Wayland app_id): "totem-keybard", like its launcher
+    // entry, while the overlay's windows are "totem-overlay". So a desktop shell sees two apps,
+    // and starting one from the launcher isn't taken for the other one already open. Electron
+    // takes it from the desktop name when it creates a window.
+    app.setDesktopName("totem-keybard.desktop");
     editorWin = new BrowserWindow({
         width: 1440,
         height: 920,
@@ -331,6 +337,7 @@ function openEditor() {
         backgroundColor: windowBg(),
         webPreferences: webPreferences(),
     });
+    app.setDesktopName("totem-overlay.desktop");
     watchWindow(editorWin);
     editorWin.setMenuBarVisibility(false);
     editorWin.loadFile(HTML);

@@ -18,6 +18,9 @@ module.exports = async function run(app) {
         const hid = await ed.webContents.executeJavaScript("typeof navigator.hid");
         if (hid !== "object") throw new Error("editor has no WebHID");
         results.push("--editor opens only the editor window (with WebHID), no overlay");
+        const cls = JSON.parse(require("node:child_process").execFileSync("python3", [path.join(__dirname, "x11-classes.py")], { encoding: "utf8" })).map((w) => w.class.join("/"));
+        if (cls.join() !== "totem-keybard/totem-keybard") throw new Error("--editor window classes: " + cls.join());
+        results.push('--editor: its window\'s class is "totem-keybard" (its own app for desktop shells)');
 
         // Save the layout: straight into Downloads (no save dialog), and the page says where
         const js = (c) => ed.webContents.executeJavaScript(c, true).catch((e) => Promise.reject(new Error(`${e.message} in: ${c.slice(0, 160)}`)));
